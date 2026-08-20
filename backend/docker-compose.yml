@@ -1,0 +1,91 @@
+services:
+  trading:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - trading-data:/app/data
+      - "${HOME}/.sibyl-memory:/home/vesper/.sibyl-memory:ro"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD","python","-c","import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  pipeline:
+    build: .
+    command: ["python","-m","app.worker"]
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - trading-data:/app/data
+      - "${HOME}/.sibyl-memory:/home/vesper/.sibyl-memory:ro"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 512m
+    cpus: 1.0
+    restart: unless-stopped
+    depends_on:
+      trading:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"from app.ingestion import IngestionStore; IngestionStore().status()\""]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+  nginx:
+    build:
+      context: ..
+      dockerfile: deploy/nginx/Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - certbot-webroot:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    environment:
+      VESPER_DOMAIN: ${VESPER_DOMAIN:-vesper-scar.duckdns.org}
+    restart: unless-stopped
+    depends_on:
+      trading:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  certbot:
+    image: certbot/certbot:latest
+    environment:
+      VESPER_DOMAIN: ${VESPER_DOMAIN:-vesper-scar.duckdns.org}
+      CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
+    volumes:
+      - certbot-webroot:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+    restart: unless-stopped
+    depends_on:
+      nginx:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      if [ -z "$$CERTBOT_EMAIL" ]; then echo CERTBOT_EMAIL is required; exit 1; fi;
+      if [ ! -f /etc/letsencrypt/live/$$VESPER_DOMAIN/fullchain.pem ]; then
+      certbot certonly --webroot -w /var/www/certbot -d $$VESPER_DOMAIN
+      --email $$CERTBOT_EMAIL --agree-tos --no-eff-email --non-interactive; fi;
+      while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h; done
+volumes:
+  trading-data:
+  certbot-webroot:
+  letsencrypt:

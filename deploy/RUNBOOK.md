@@ -1,0 +1,33 @@
+# Vesper operations runbook
+
+## Health
+
+```bash
+curl "$VESPER_API_URL/health"
+curl -H "X-Vesper-Key: $VESPER_API_KEY" "$VESPER_API_URL/ready"
+curl -H "X-Vesper-Key: $VESPER_API_KEY" "$VESPER_API_URL/observability"
+curl -H "X-Vesper-Key: $VESPER_API_KEY" "$VESPER_API_URL/alerts"
+```
+
+## Incident response
+
+1. If `MARKET_DATA_STALE` or `INGESTION_WORKER_STALE` is active, keep the system in paper/shadow and inspect the pipeline logs.
+2. If `ERROR_BURST` is active, revoke the client key and switch the operator mode to paper.
+3. If execution state is uncertain, revoke live approval and do not retry orders manually until `/orders` and venue state agree.
+4. Run `deploy/backup.sh` before destructive recovery work.
+5. Validate the deployment with `deploy/validate.sh` after recovery.
+
+## Key rotation
+
+Rotate with the admin credential:
+
+```bash
+curl -X POST -H "X-Vesper-Key: $VESPER_ADMIN_KEY" \
+  "$VESPER_API_URL/operator/rotate-key?scope=trade"
+```
+
+Store the returned key in the secret manager, replace the configured client key, and restart the API and frontend. Revoke the old key after clients have migrated.
+
+## Backups
+
+Back up before migrations or recovery. The backup script stops both API and ingestion writers, copies the persistent volume, and restarts both services. Copy resulting archives off-host and test restoration regularly.
