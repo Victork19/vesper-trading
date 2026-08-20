@@ -67,7 +67,9 @@ services:
       timeout: 5s
       retries: 3
   certbot:
-    image: certbot/certbot:latest
+    build:
+      context: ..
+      dockerfile: deploy/certbot/Dockerfile
     environment:
       VESPER_DOMAIN: ${VESPER_DOMAIN:-vesper-scar.duckdns.org}
       CERTBOT_EMAIL: ${CERTBOT_EMAIL:-}
@@ -78,13 +80,6 @@ services:
     depends_on:
       nginx:
         condition: service_healthy
-    entrypoint: ["/bin/sh", "-c"]
-    command: >-
-      if [ -z "$$CERTBOT_EMAIL" ]; then echo CERTBOT_EMAIL is required; exit 1; fi;
-      if [ ! -f /etc/letsencrypt/live/$$VESPER_DOMAIN/fullchain.pem ]; then
-      certbot certonly --webroot -w /var/www/certbot -d $$VESPER_DOMAIN
-      --email $$CERTBOT_EMAIL --agree-tos --no-eff-email --non-interactive; fi;
-      while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h; done
 volumes:
   trading-data:
   certbot-webroot:
