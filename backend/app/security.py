@@ -1,4 +1,4 @@
-import hashlib,secrets,threading,time
+import base64,hashlib,hmac,json,os,secrets,threading,time
 from collections import defaultdict,deque
 from dataclasses import dataclass
 from fastapi import HTTPException
@@ -37,3 +37,27 @@ class SecurityManager:
    for digest,(stored_id,_) in list(self.keys.items()):
     if stored_id==key_id:del self.keys[digest];return True
   return False
+ def create_session(self,key,ttl=None):
+  principal=self.authenticate(key,'read')
+  secret=self.settings.session_secret
+  if not secret: raise HTTPException(503,'Session authentication is not configured')
+  expires=int(time.time())+int(ttl or self.settings.session_ttl_seconds)
+  payload={'sid':'sess_'+secrets.token_urlsafe(18),'key_id':principal.key_id,'scope':principal.scope,'exp':expires}
+  encoded=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode().rstrip('=')
+  signature=hmac.new(secret.encode(),encoded.encode(),hashlib.sha256).digest()
+  return encoded+'.'+base64.urlsafe_b64encode(signature).decode().rstrip('='),payload
+ def authenticate_session(self,token,required='read'):
+  if not token: raise HTTPException(401,'Missing session')
+  secret=self.settings.session_secret
+  if not secret: raise HTTPException(503,'Session authentication is not configured')
+  try:
+   encoded,provided=token.split('.',1)
+   expected=base64.urlsafe_b64encode(hmac.new(secret.encode(),encoded.encode(),hashlib.sha256).digest()).decode().rstrip('=')
+   if not hmac.compare_digest(provided,expected): raise ValueError('signature')
+   payload=json.loads(base64.urlsafe_b64decode(encoded+'='*((4-len(encoded)%4)%4)))
+   if int(payload.get('exp',0))<int(time.time()): raise ValueError('expired')
+   scope=str(payload.get('scope',''));key_id=str(payload.get('key_id','session'))
+   if not (scope=='admin' or scope==required or (required=='read' and scope=='trade')): raise HTTPException(403,'Insufficient session scope')
+   return Principal(key_id,scope)
+  except HTTPException: raise
+  except Exception: raise HTTPException(401,'Invalid or expired session')

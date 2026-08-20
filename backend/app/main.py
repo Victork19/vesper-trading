@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, Cookie
 from fastapi.responses import PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from .models import *
@@ -23,7 +23,7 @@ from datetime import datetime,timezone
 import time,uuid,json,logging
 app=FastAPI(title='Vesper Trading',version='6.0.0')
 security=SecurityManager(settings)
-app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:5173').split(','),allow_methods=['*'],allow_headers=['*'])
+app.add_middleware(CORSMiddleware,allow_origins=os.getenv('CORS_ORIGINS','http://localhost:5173').split(','),allow_methods=['*'],allow_headers=['*'],allow_credentials=True)
 log=logging.getLogger('vesper.api')
 
 @app.middleware('http')
@@ -43,10 +43,24 @@ async def request_telemetry(request:Request,call_next):
   log.info(json.dumps({'event':'http_request','request_id':rid,'method':request.method,'path':request.url.path,'status':status,'duration_ms':round(elapsed*1000,2)}))
   if 'response' in locals():response.headers['X-Request-ID']=rid
 
-def require_api_key(x_vesper_key:str|None=Header(default=None)):return security.authenticate(x_vesper_key,'read')
-def require_trade(x_vesper_key:str|None=Header(default=None)):return security.authenticate(x_vesper_key,'trade')
+def require_api_key(x_vesper_key:str|None=Header(default=None),vesper_session:str|None=Cookie(default=None)):return security.authenticate_session(vesper_session,'read') if vesper_session else security.authenticate(x_vesper_key,'read')
+def require_trade(x_vesper_key:str|None=Header(default=None),vesper_session:str|None=Cookie(default=None)):return security.authenticate_session(vesper_session,'trade') if vesper_session else security.authenticate(x_vesper_key,'trade')
+def require_admin(x_vesper_key:str|None=Header(default=None),vesper_session:str|None=Cookie(default=None)):return security.authenticate_session(vesper_session,'admin') if vesper_session else security.authenticate(x_vesper_key,'admin')
 
-def require_admin(x_vesper_key:str|None=Header(default=None)):return security.authenticate(x_vesper_key,'admin')
+@app.post('/auth/session')
+def create_session(request:Request,x_vesper_key:str|None=Header(default=None)):
+ token,payload=security.create_session(x_vesper_key)
+ response=PlainTextResponse(json.dumps({'authenticated':True,'scope':payload['scope'],'expires_at':payload['exp']}),media_type='application/json')
+ response.set_cookie('vesper_session',token,max_age=settings.session_ttl_seconds,httponly=True,secure=settings.cookie_secure or request.url.scheme=='https',samesite=settings.cookie_samesite,path='/')
+ return response
+
+@app.get('/auth/session')
+def session_status(vesper_session:str|None=Cookie(default=None)):
+ principal=security.authenticate_session(vesper_session,'read');return {'authenticated':True,'key_id':principal.key_id,'scope':principal.scope}
+
+@app.delete('/auth/session')
+def delete_session():
+ response=PlainTextResponse('',status_code=204);response.delete_cookie('vesper_session',path='/');return response
 memory=TradingMemory();edge=EdgeEngine();risk=RiskEngine(memory);portfolio=PortfolioRisk(memory);toxic=ToxicFlowDetector();bucket_killer=BucketKiller(memory);scars=ScarEngine(memory);metrics_engine=MetricsEngine(memory);markets=PolymarketData();graph=ExperienceGraph(memory);reference=ReferenceClassEngine();strategies=StrategyRegistry();secondary=SecondarySignals();ingestion_store=IngestionStore();autonomy=AutonomyGate(memory,ingestion_store)
 @app.get('/health')
 def health():telemetry.set('vesper_mode',{'paper':0,'shadow':1,'live':2}.get(memory.hot().mode.value,0));return {'status':'ok','service':'vesper-trading','mode':memory.hot().mode,'memory_load_bearing':True,'official_sibyl':bool(memory.official),'live_enabled':settings.live_enabled}

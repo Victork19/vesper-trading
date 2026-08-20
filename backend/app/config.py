@@ -12,5 +12,9 @@ class Settings(BaseModel):
     min_data_quality:float=float(os.getenv('MIN_DATA_QUALITY','.95'))
     api_key:str=os.getenv('VESPER_API_KEY','')
     admin_key:str=os.getenv('VESPER_ADMIN_KEY','')
+    session_secret:str=os.getenv('VESPER_SESSION_SECRET','')
+    session_ttl_seconds:int=int(os.getenv('VESPER_SESSION_TTL_SECONDS','28800'))
+    cookie_samesite:str=os.getenv('VESPER_COOKIE_SAMESITE','lax')
+    cookie_secure:bool=os.getenv('VESPER_COOKIE_SECURE','false').lower()=='true'
     auth_required:bool=os.getenv('VESPER_AUTH_REQUIRED','true').lower()=='true'
 settings=Settings()
