@@ -11,31 +11,33 @@ class IngestionStore:
   with self.lock:
    market_id=str(market.get('id') or market.get('conditionId') or '')
    if not market_id:return False
-   payload=json.dumps(market,sort_keys=True,separators=(',',':'));digest=hashlib.sha256(payload.encode()).hexdigest();observed=datetime.now(timezone.utc).isoformat();valid=self.validate(market);book=market.get('_vesper_book') or {};book_valid=bool(book.get('best_bid') is not None and book.get('best_ask') is not None and book.get('best_bid')<book.get('best_ask'));sequence=book.get('sequence')
+   payload=json.dumps(market,sort_keys=True,separators=(',',':'));digest=hashlib.sha256(payload.encode()).hexdigest();observed=datetime.now(timezone.utc).isoformat();reason=self.validation_reason(market);valid=reason is None;book=market.get('_vesper_book') or {};book_valid=bool(book.get('best_bid') is not None and book.get('best_ask') is not None and book.get('best_bid')<book.get('best_ask'));sequence=book.get('sequence')
    with self.db.connection() as c:
-    inserted=c.execute('INSERT INTO market_snapshots(market_id,observed_at,payload,payload_hash) VALUES(%s,%s,%s,%s) ON CONFLICT(payload_hash) DO NOTHING',(market_id,observed,self.db.json(market),digest)).rowcount==1;c.execute('INSERT INTO market_observations(market_id,observed_at,payload_hash,valid,book_valid,book_sequence) VALUES(%s,%s,%s,%s,%s,%s)',(market_id,observed,digest,valid,book_valid,sequence))
+    inserted=c.execute('INSERT INTO market_snapshots(market_id,observed_at,payload,payload_hash) VALUES(%s,%s,%s,%s) ON CONFLICT(payload_hash) DO NOTHING',(market_id,observed,self.db.json(market),digest)).rowcount==1;c.execute('INSERT INTO market_observations(market_id,observed_at,payload_hash,valid,validation_reason,book_valid,book_sequence) VALUES(%s,%s,%s,%s,%s,%s,%s)',(market_id,observed,digest,valid,reason,book_valid,sequence))
    telemetry.inc('vesper_market_observations_total',labels={'valid':str(int(valid)),'book_valid':str(int(book_valid))});return inserted
  def validate(self,market):
+  return self.validation_reason(market) is None
+ def validation_reason(self,market):
   try:
-   if not str(market.get('question','')).strip():return False
+   if not str(market.get('question','')).strip():return 'missing_question'
    prices=market.get('outcomePrices',[.5]);prices=json.loads(prices) if isinstance(prices,str) else prices
-   if not isinstance(prices,list) or not prices or any(float(x)<0 or float(x)>1 for x in prices):return False
+   if not isinstance(prices,list) or not prices or any(float(x)<0 or float(x)>1 for x in prices):return 'invalid_outcome_prices'
    for key in ('liquidity','volume24h','volume24hr'):
-    if key in market and market[key] not in (None,'') and float(market[key])<0:return False
-   if market.get('closed') and market.get('active'):return False
+    if key in market and market[key] not in (None,'') and float(market[key])<0:return 'negative_'+key
+   if market.get('closed') and market.get('active'):return 'closed_and_active'
    book=market.get('_vesper_book') or {}
-   if self.require_books and not book:return False
-   if book and (book.get('best_bid') is None or book.get('best_ask') is None or book.get('best_bid')>=book.get('best_ask')):return False
-   return True
-  except (TypeError,ValueError,json.JSONDecodeError):return False
+   if self.require_books and not book:return 'missing_order_book'
+   if book and (book.get('best_bid') is None or book.get('best_ask') is None or book.get('best_bid')>=book.get('best_ask')):return 'invalid_order_book'
+   return None
+  except (TypeError,ValueError,json.JSONDecodeError):return 'malformed_market_payload'
  def count(self):
   with self.db.connection() as c:return c.execute('SELECT COUNT(*) AS count FROM market_observations').fetchone()['count']
  def distinct_markets(self):
   with self.db.connection() as c:return c.execute('SELECT COUNT(DISTINCT market_id) AS count FROM market_observations').fetchone()['count']
  def quality(self):
-  with self.db.connection() as c:row=c.execute("SELECT COUNT(*) AS total,COUNT(*) FILTER (WHERE NOT valid) AS invalid,COUNT(*) FILTER (WHERE NOT book_valid) AS invalid_books,MAX(observed_at) AS last FROM market_observations").fetchone()
+  with self.db.connection() as c:row=c.execute("SELECT COUNT(*) AS total,COUNT(*) FILTER (WHERE NOT valid) AS invalid,COUNT(*) FILTER (WHERE NOT book_valid) AS invalid_books,MAX(observed_at) AS last FROM market_observations").fetchone();reason_rows=c.execute("SELECT COALESCE(validation_reason,'unknown') AS reason,COUNT(*) AS count FROM market_observations WHERE NOT valid GROUP BY validation_reason ORDER BY count DESC").fetchall()
   total=row['total'];invalid=row['invalid'];invalid_books=row['invalid_books'];last=row['last'];last_value=last.isoformat() if hasattr(last,'isoformat') else last;stale=not last or (datetime.now(timezone.utc)-last).total_seconds()>300
-  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'missing_required_fields':invalid,'invalid_observations':invalid,'invalid_books':invalid_books,'book_coverage':0 if not total else max(0,1-(invalid_books/total)),'last_observed_at':last_value,'stale':stale}
+  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'missing_required_fields':invalid,'invalid_observations':invalid,'invalid_books':invalid_books,'invalid_reasons':{row['reason']:row['count'] for row in reason_rows},'book_coverage':0 if not total else max(0,1-(invalid_books/total)),'last_observed_at':last_value,'stale':stale}
  def status(self):
   with self.db.connection() as c:last=c.execute('SELECT MAX(observed_at) AS last FROM market_observations').fetchone()['last']
   return {'snapshots':self.count(),'distinct_markets':self.distinct_markets(),'last_observed_at':last.isoformat() if hasattr(last,'isoformat') else last,'quality':self.quality(),'worker':self.worker_health()}

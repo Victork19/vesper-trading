@@ -176,15 +176,19 @@ def _research_slice(items):
  return {'count':len(items),'wins':wins,'win_rate':wins/len(items),'pnl':pnl,'expectancy':pnl/len(items),'profit_factor':profits/abs(losses) if losses else None,'max_drawdown':drawdown,'avg_clv':sum(clvs)/len(clvs) if clvs else None,'brier':brier}
 
 def research_report(decisions):
- resolved=sorted([d for d in decisions if d.size>0 and d.outcome not in ('pending','void')],key=lambda d:d.created_at)
- split=max(0,int(len(resolved)*.7));train=resolved[:split];test=resolved[split:]
+ raw=sorted([d for d in decisions if d.size>0 and d.outcome not in ('pending','void')],key=lambda d:d.created_at);groups={}
+ for decision in raw:groups.setdefault(f'{decision.strategy_id}:{decision.market_id}:{decision.regime}',[]).append(decision)
+ resolved=[]
+ for bucket in groups.values():
+  first=bucket[0];pnl=sum(float(d.pnl) for d in bucket);clvs=[float(d.clv) for d in bucket if d.clv is not None];resolved.append(first.model_copy(update={'pnl':pnl,'clv':sum(clvs)/len(clvs) if clvs else None,'outcome':'win' if pnl>0 else 'loss' if pnl<0 else 'push'}))
+ resolved.sort(key=lambda d:d.created_at);split=max(0,int(len(resolved)*.7));train=resolved[:split];test=resolved[split:]
  scars=memory.scars();post=[]
  for scar in scars:
   try:created=datetime.fromisoformat(scar.created_at.replace('Z','+00:00'))
   except ValueError:continue
   bucket=[d for d in resolved if d.strategy_id==scar.strategy_id and d.market_type==scar.market_type and d.regime==scar.regime and datetime.fromisoformat(d.created_at.replace('Z','+00:00'))>created]
   if bucket:post.append({'scar_id':scar.id,'status':scar.status,'outcomes':len(bucket),'pnl':sum(float(d.pnl) for d in bucket),'win_rate':sum(1 for d in bucket if d.outcome=='win')/len(bucket)})
- return {'status':'insufficient_data' if len(resolved)<10 else 'available','resolved_exposures':len(resolved),'independent_buckets':len({f'{d.strategy_id}:{d.market_id}:{d.regime}' for d in resolved}),'minimum_for_oos':10,'train':_research_slice(train),'out_of_sample':_research_slice(test),'scar_effectiveness':post}
+ return {'status':'insufficient_data' if len(resolved)<10 else 'available','resolved_exposures':len(raw),'independent_buckets':len(resolved),'independent_resolved':len(resolved),'minimum_for_oos':10,'train':_research_slice(train),'out_of_sample':_research_slice(test),'scar_effectiveness':post}
 
 @app.get('/research/report')
 def research(_=Depends(require_api_key)):return research_report(memory.decisions())
@@ -253,7 +257,7 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
   if settings.max_order_size<=0:size=0;gates+=['live_order_limit_gate']
   else:size=min(size,settings.max_order_size)
  action='DO NOTHING' if size<=0 else 'BUY';risk_score=min(10,max(1,int(e.raw_edge*100+(10 if relevant else 3))));rationale=('No trade: '+'; '.join(gates)) if size<=0 else 'Calibrated probability, executable side edge, liquidity, capacity, trust, scars, and portfolio gates passed.';status='paper' if h.mode==Mode.PAPER else 'shadow' if h.mode==Mode.SHADOW else 'live-gated'
- d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=e.raw_edge*size,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence)
+ d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=e.raw_edge*size,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,model_version=req.market.model_version,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence)
  telemetry.inc('vesper_decisions_total',labels={'mode':h.mode.value,'action':action,'strategy':req.strategy_id});telemetry.set('vesper_portfolio_heat',h.portfolio_heat)
  memory.put('COLD',d.id,d.model_dump());memory.event('decision',d.model_dump())
  if req.execute and d.size>0:

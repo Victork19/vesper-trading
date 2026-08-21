@@ -22,8 +22,8 @@ class PolymarketData:
     last=exc
     if attempt+1<self.retries:time.sleep(.2*(2**attempt))
   telemetry.error('market_data_request');raise MarketDataError(f'market data request failed after {self.retries} attempts: {last}')
- def markets(self,limit=20,active=True):
-  data=self._get(GAMMA+'/markets',{'limit':max(1,min(int(limit),100)),'active':str(active).lower()})
+ def markets(self,limit=20,active=True,offset=0):
+  data=self._get(GAMMA+'/markets',{'limit':max(1,min(int(limit),100)),'offset':max(0,int(offset)),'active':str(active).lower()})
   if not isinstance(data,list):raise MarketDataError('Gamma markets response was not a list')
   return [self.validate_market(x) for x in data if isinstance(x,dict)]
  def market(self,market_id):
@@ -73,7 +73,7 @@ class PolymarketData:
    if yes_ask is not None:no_bid=max(0,min(1,1-yes_ask))
   observed=datetime.now(timezone.utc);quote_observed=datetime.fromisoformat(book.observed_at.replace('Z','+00:00')) if book else None;end_time=self._end_time(item);resolution_hours=max(.001,(end_time-observed).total_seconds()/3600) if end_time else 168
   quality=self.quality(item,book);snapshot_payload={'market':item,'book':book.model_dump() if book else None};snapshot_hash=hashlib.sha256(json.dumps(snapshot_payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-  return MarketInput(market_id=str(item.get('id') or item.get('conditionId')),question=str(item.get('question','')),market_type=str(item.get('category') or item.get('eventType') or item.get('marketType') or 'unknown'),price=price,volume_24h=self._number(item.get('volume24hr') or item.get('volume24h')),liquidity=self._number(item.get('liquidity')),resolution_hours=resolution_hours,regime='baseline',source='polymarket-clob' if book else 'polymarket-gamma',observed_at=observed,quote_observed_at=quote_observed,quality_score=quality.score,snapshot_hash=snapshot_hash,yes_bid=yes_bid,yes_ask=yes_ask,no_bid=no_bid,no_ask=no_ask,book_bids=book.bids if book else [],book_asks=book.asks if book else [],book_sequence=book.sequence if book else None,market_status='active' if item.get('active',True) and not item.get('closed',False) else 'closed',market_end_time=end_time)
+  return MarketInput(market_id=str(item.get('id') or item.get('conditionId')),question=str(item.get('question','')),market_type=str(item.get('category') or item.get('eventType') or item.get('marketType') or 'unknown'),price=price,volume_24h=self._number(item.get('volume24hr') or item.get('volume24h')),liquidity=self._number(item.get('liquidity')),resolution_hours=resolution_hours,regime='baseline',source='polymarket-clob' if book else 'polymarket-gamma',observed_at=observed,quote_observed_at=quote_observed,quality_score=quality.score,snapshot_hash=snapshot_hash,yes_bid=yes_bid,yes_ask=yes_ask,no_bid=no_bid,no_ask=no_ask,book_bids=book.bids if book else [],book_asks=book.asks if book else [],book_sequence=book.sequence if book else None,market_status='active' if item.get('active',True) and not item.get('closed',False) else 'closed',market_end_time=end_time,fee_rate=float(os.getenv('PAPER_FEE_RATE','.02')),slippage_bps=float(os.getenv('PAPER_SLIPPAGE_BPS','10')))
  def quality(self,market,book=None):
   reasons=[];active=bool(market.get('active',True)) and not bool(market.get('closed',False));liquid=self._number(market.get('liquidity'))>=1000 and self._number(market.get('volume24hr') or market.get('volume24h'))>=5000
   if not active:reasons.append('market_not_active')

@@ -56,6 +56,12 @@ class ScarEngine:
   changed=[]
   for scar in self.memory.scars():
    if scar.status in ('resolved','rehabilitated') or scar.strategy_id!=d.strategy_id or scar.market_type not in (d.market_type,'unknown','global') or scar.regime not in (d.regime,'unknown','global'):continue
+   try:
+    scar_created=datetime.fromisoformat(scar.created_at.replace('Z','+00:00'));decision_created=datetime.fromisoformat(d.created_at.replace('Z','+00:00'))
+    # Timestamps are intentionally second-resolution; equal timestamps can be
+    # the Scar creation and its immediately following settlement in one tick.
+    if decision_created<scar_created:continue
+   except (TypeError,ValueError):continue
    if clv<0 or any(x in d.gates for x in ('daily_kill_switch','weekly_kill_switch','scar_constitutional_stop')):continue
    scar.status='rehabilitating';scar.rehabilitation_progress=min(scar.rehabilitation_required,scar.rehabilitation_progress+1);scar.impact.max_size_multiplier=min(1.0,scar.impact.max_size_multiplier+.1)
    if scar.rehabilitation_progress>=scar.rehabilitation_required:scar.status='rehabilitated';scar.resolved_at=now_iso();scar.impact.trust_delta=0;scar.impact.max_size_multiplier=1.0

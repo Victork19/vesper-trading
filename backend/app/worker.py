@@ -2,6 +2,7 @@ import json,os,time,logging
 from datetime import datetime,timezone
 from .ingestion import IngestionRunner
 from .models import DecisionRequest,Mode
+from .fast_probability import FastMarketProbability
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'));log=logging.getLogger('vesper.pipeline')
 def _number(value,default=None):
  try:return float(value) if value not in (None,'') else default
@@ -18,13 +19,20 @@ def autonomous_paper_cycle(runner,memory,decide_fn):
  enabled=os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true'
  if not enabled or memory.hot().mode!=Mode.PAPER:return {'enabled':enabled,'evaluated':0,'traded':0,'skipped':0,'reason':'disabled_or_not_paper'}
  limit=max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3')));cooldown=max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')));type_cap=max(1,int(os.getenv('AUTO_PAPER_MAX_PER_TYPE_PER_TICK','1')));min_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));max_hours=max(min_hours,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24')));prefer_fast=os.getenv('AUTO_PAPER_PREFER_FAST_MARKETS','true').lower()=='true'
- now=datetime.now(timezone.utc);recent={};pending_markets=set()
+ now=datetime.now(timezone.utc);recent={};pending_markets=set();fast_model=FastMarketProbability()
  for decision in memory.decisions():
   if decision.source.startswith('polymarket'):
    if decision.outcome=='pending' and decision.size>0:pending_markets.add(decision.market_id)
    try:recent[decision.market_id]=datetime.fromisoformat(decision.created_at.replace('Z','+00:00'))
    except ValueError:continue
- type_counts={};evaluated=traded=skipped=0;horizon_skipped=0;candidate_count=0;items=runner.data.markets(max(50,limit*20));ranked=[]
+ type_counts={};evaluated=traded=skipped=0;horizon_skipped=0;candidate_count=0;page_size=max(50,min(100,int(os.getenv('AUTO_PAPER_MARKET_PAGE_SIZE','100'))));pages=max(1,min(10,int(os.getenv('AUTO_PAPER_MARKET_PAGES','5'))));items=[]
+ for page in range(pages):
+  batch=runner.data.markets(page_size,offset=page*page_size)
+  if not batch:break
+  items.extend(batch)
+  if len(batch)<page_size:break
+ items={str(item.get('id') or item.get('conditionId')):item for item in items}.values()
+ items=list(items);ranked=[]
  for item in items:
   end_time=_end_time(item)
   if end_time is None:
@@ -50,7 +58,11 @@ def autonomous_paper_cycle(runner,memory,decide_fn):
   except Exception:skipped+=1;continue
   if market_input.quality_score<.95 or market_input.market_status!='active':skipped+=1;continue
   reference=_number(item.get('reference_rate') or item.get('referenceRate'))
-  if reference is not None:market_input.reference_rate=max(0,min(1,reference))
+  model=fast_model.estimate(item,market_input) if reference is None else None
+  if model is not None:
+   market_input.reference_rate=model['probability'];market_input.model_version=model['model_version'];market_input.signals={'fast_model':model['probability']}
+  elif reference is not None:market_input.reference_rate=max(0,min(1,reference))
+  else:skipped+=1;log.info('autonomous paper skipped market=%s reason=fast_model_unavailable',market_id);continue
   request=DecisionRequest(market=market_input,strategy_id=os.getenv('AUTO_PAPER_STRATEGY','reference_class'),execute=True,evidence_complete=True)
   try:decision=decide_fn(request,None)
   except Exception as exc:skipped+=1;log.warning('autonomous paper evaluation failed market=%s error=%s',market_id,exc);continue

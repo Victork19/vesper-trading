@@ -62,6 +62,14 @@ AUTO_PAPER_STRATEGY=reference_class
 AUTO_PAPER_MIN_RESOLUTION_HOURS=0.05
 AUTO_PAPER_MAX_RESOLUTION_HOURS=24
 AUTO_PAPER_PREFER_FAST_MARKETS=true
+AUTO_PAPER_MARKET_PAGE_SIZE=100
+AUTO_PAPER_MARKET_PAGES=5
+PAPER_FEE_RATE=0.02
+PAPER_SLIPPAGE_BPS=10
+FAST_MODEL_ENABLED=true
+FAST_MODEL_LOOKBACK_MINUTES=30
+FAST_MODEL_CACHE_SECONDS=15
+FAST_MODEL_MIN_CONFIDENCE=0.2
 ```
 
 ## API
@@ -97,6 +105,12 @@ genuine edge. Tune it with `AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_C
 `AUTO_PAPER_MAX_PER_TYPE_PER_TICK`, `AUTO_PAPER_MIN_RESOLUTION_HOURS`, `AUTO_PAPER_MAX_RESOLUTION_HOURS`, and
 `AUTO_PAPER_PREFER_FAST_MARKETS`. Five-minute markets can increase sample throughput, but they require liquid books and
 should be evaluated with realistic latency and slippage assumptions.
+
+For short-horizon crypto markets, the autonomous loop uses `fast_market_v1`: a conservative drift/volatility estimate from
+public one-minute spot candles. It identifies the asset and direction from the market question, projects the configured
+expiry horizon, records the model version and feature signals, and fails closed when the asset, direction, price history,
+or confidence threshold is unavailable. This is a research model that must be calibrated against resolved outcomes before
+any live consideration.
 
 ## Current implementation boundary
 
