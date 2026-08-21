@@ -113,6 +113,16 @@ def list_markets(limit:int=20):
 def get_market(market_id):
  try:return markets.market(market_id)
  except Exception as e:raise HTTPException(502,str(e))
+@app.get('/markets/input/{market_id}',response_model=MarketInput)
+def market_input(market_id:str,_=Depends(require_api_key)):
+ try:
+  market=markets.market(market_id);tokens=market.get('clobTokenIds') or market.get('clobTokenIDs') or []
+  if isinstance(tokens,str):
+   try:tokens=json.loads(tokens)
+   except json.JSONDecodeError:tokens=[]
+  book=markets.book(str(tokens[0])) if isinstance(tokens,list) and tokens else None
+  return markets.to_input(market,book)
+ except Exception as e:raise HTTPException(502,str(e))
 @app.get('/markets/book/{token_id}')
 def get_book(token_id):
  try:return markets.book(token_id)
@@ -195,7 +205,7 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
   if settings.max_order_size<=0:size=0;gates+=['live_order_limit_gate']
   else:size=min(size,settings.max_order_size)
  action='DO NOTHING' if size<=0 else 'BUY';risk_score=min(10,max(1,int(e.raw_edge*100+(10 if relevant else 3))));rationale=('No trade: '+'; '.join(gates)) if size<=0 else 'Calibrated probability, executable side edge, liquidity, capacity, trust, scars, and portfolio gates passed.';status='paper' if h.mode==Mode.PAPER else 'shadow' if h.mode==Mode.SHADOW else 'live-gated'
- d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=e.raw_edge*size,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,quality_score=req.market.quality_score,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence)
+ d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=e.raw_edge*size,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence)
  telemetry.inc('vesper_decisions_total',labels={'mode':h.mode.value,'action':action,'strategy':req.strategy_id});telemetry.set('vesper_portfolio_heat',h.portfolio_heat)
  memory.put('COLD',d.id,d.model_dump());memory.event('decision',d.model_dump())
  if req.execute and d.size>0:

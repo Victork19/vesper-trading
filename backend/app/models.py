@@ -16,7 +16,7 @@ class MarketInput(BaseModel):
  market_id:str; question:str; market_type:str='unknown'; price:float=Field(ge=0,le=1)
  volume_24h:float=Field(default=0,ge=0); liquidity:float=Field(default=0,ge=0); resolution_hours:float=Field(default=168,gt=0)
  regime:str='baseline'; reference_rate:float|None=Field(default=None,ge=0,le=1); signals:dict[str,float]=Field(default_factory=dict)
- source:str='manual'; observed_at:datetime|None=None; quote_observed_at:datetime|None=None; quality_score:float=Field(default=1,ge=0,le=1); market_status:str='active'; market_end_time:datetime|None=None; book_bids:list[BookLevel]=Field(default_factory=list); book_asks:list[BookLevel]=Field(default_factory=list); book_sequence:int|None=None
+ source:str='manual'; observed_at:datetime|None=None; quote_observed_at:datetime|None=None; quality_score:float=Field(default=1,ge=0,le=1); snapshot_hash:str|None=None; market_status:str='active'; market_end_time:datetime|None=None; book_bids:list[BookLevel]=Field(default_factory=list); book_asks:list[BookLevel]=Field(default_factory=list); book_sequence:int|None=None
  yes_token_id:str|None=None; no_token_id:str|None=None
  yes_bid:float|None=Field(default=None,ge=0,le=1); yes_ask:float|None=Field(default=None,ge=0,le=1)
  no_bid:float|None=Field(default=None,ge=0,le=1); no_ask:float|None=Field(default=None,ge=0,le=1)
@@ -61,7 +61,7 @@ class DecisionRecord(BaseModel):
     cited_principles:list[str]=Field(default_factory=list); gates:list[str]=Field(default_factory=list)
     status:str='paper'; outcome:str='pending'; pnl:float=0; clv:float|None=None
     resolved_yes:bool|None=None; order_id:str|None=None
-    source:str='manual'; quality_score:float=1; observed_at:str|None=None; quote_observed_at:str|None=None; book_sequence:int|None=None
+    source:str='manual'; quality_score:float=1; snapshot_hash:str|None=None; observed_at:str|None=None; quote_observed_at:str|None=None; book_sequence:int|None=None
 
 class OrderBook(BaseModel):
     token_id:str; observed_at:str; bids:list[BookLevel]=Field(default_factory=list); asks:list[BookLevel]=Field(default_factory=list)

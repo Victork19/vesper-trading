@@ -33,9 +33,9 @@ class IngestionStore:
  def distinct_markets(self):
   with self.db.connection() as c:return c.execute('SELECT COUNT(DISTINCT market_id) AS count FROM market_observations').fetchone()['count']
  def quality(self):
-  with self.db.connection() as c:row=c.execute("SELECT COUNT(*) AS total,COUNT(*) FILTER (WHERE NOT valid) AS invalid,MAX(observed_at) AS last FROM market_observations").fetchone()
-  total=row['total'];invalid=row['invalid'];last=row['last'];last_value=last.isoformat() if hasattr(last,'isoformat') else last;stale=not last or (datetime.now(timezone.utc)-last).total_seconds()>300
-  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'missing_required_fields':invalid,'last_observed_at':last_value,'stale':stale}
+  with self.db.connection() as c:row=c.execute("SELECT COUNT(*) AS total,COUNT(*) FILTER (WHERE NOT valid) AS invalid,COUNT(*) FILTER (WHERE NOT book_valid) AS invalid_books,MAX(observed_at) AS last FROM market_observations").fetchone()
+  total=row['total'];invalid=row['invalid'];invalid_books=row['invalid_books'];last=row['last'];last_value=last.isoformat() if hasattr(last,'isoformat') else last;stale=not last or (datetime.now(timezone.utc)-last).total_seconds()>300
+  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'missing_required_fields':invalid,'invalid_observations':invalid,'invalid_books':invalid_books,'book_coverage':0 if not total else max(0,1-(invalid_books/total)),'last_observed_at':last_value,'stale':stale}
  def status(self):
   with self.db.connection() as c:last=c.execute('SELECT MAX(observed_at) AS last FROM market_observations').fetchone()['last']
   return {'snapshots':self.count(),'distinct_markets':self.distinct_markets(),'last_observed_at':last.isoformat() if hasattr(last,'isoformat') else last,'quality':self.quality(),'worker':self.worker_health()}
@@ -44,10 +44,12 @@ class IngestionStore:
   with self.db.connection() as c:
    if error:c.execute('UPDATE pipeline_health SET last_tick_at=%s,last_error_at=%s,last_error=%s,error_count=error_count+1 WHERE id=1',(now,now,str(error)))
    else:c.execute('UPDATE pipeline_health SET last_tick_at=%s,last_success_at=%s,last_error=NULL,last_markets=%s,last_books=%s WHERE id=1',(now,now,markets,books))
+ def record_resolution(self,result):
+  with self.db.connection() as c:c.execute('UPDATE pipeline_health SET last_resolution_at=%s,last_resolved=%s,last_resolution_errors=%s,last_pending=%s WHERE id=1',(datetime.now(timezone.utc),result.get('settled',0),result.get('errors',0),result.get('pending',0)))
  def worker_health(self):
-  with self.db.connection() as c:r=c.execute('SELECT last_tick_at,last_success_at,last_error_at,last_error,error_count,last_markets,last_books FROM pipeline_health WHERE id=1').fetchone()
+  with self.db.connection() as c:r=c.execute('SELECT last_tick_at,last_success_at,last_error_at,last_error,error_count,last_markets,last_books,last_resolution_at,last_resolved,last_resolution_errors,last_pending FROM pipeline_health WHERE id=1').fetchone()
   if not r:return {'status':'unknown'}
-  data=dict(r);last=data.get('last_success_at') or data.get('last_tick_at');data['last_tick_at']=data['last_tick_at'].isoformat() if hasattr(data['last_tick_at'],'isoformat') else data['last_tick_at'];data['last_success_at']=data['last_success_at'].isoformat() if hasattr(data['last_success_at'],'isoformat') else data['last_success_at'];data['stale']=not last or (datetime.now(timezone.utc)-last).total_seconds()>180;data['status']='degraded' if data['stale'] or data.get('last_error') else 'healthy';return data
+  data=dict(r);last=data.get('last_success_at') or data.get('last_tick_at');data['last_tick_at']=data['last_tick_at'].isoformat() if hasattr(data['last_tick_at'],'isoformat') else data['last_tick_at'];data['last_success_at']=data['last_success_at'].isoformat() if hasattr(data['last_success_at'],'isoformat') else data['last_success_at'];data['last_resolution_at']=data['last_resolution_at'].isoformat() if hasattr(data['last_resolution_at'],'isoformat') else data['last_resolution_at'];data['stale']=not last or (datetime.now(timezone.utc)-last).total_seconds()>180;data['status']='degraded' if data['stale'] or data.get('last_error') else 'healthy';return data
 
 class IngestionRunner:
  def __init__(self):self.data=PolymarketData();self.store=IngestionStore();self.resolver=OutcomeResolver(data=self.data)
@@ -62,4 +64,4 @@ class IngestionRunner:
     try:book=self.data.book(str(tokens[0]));enriched['_vesper_book']=book.model_dump();books+=1
     except Exception as exc:enriched['_vesper_book_error']=str(exc);telemetry.error('book_fetch')
    saved+=int(self.store.save(enriched))
-  self.store.record_heartbeat(len(items),books);resolution=self.resolver.tick();return {'markets':len(items),'books':books,'new_snapshots':saved,'observations':self.store.count(),'resolution':resolution}
+  self.store.record_heartbeat(len(items),books);resolution=self.resolver.tick();self.store.record_resolution(resolution);return {'markets':len(items),'books':books,'new_snapshots':saved,'observations':self.store.count(),'resolution':resolution}

@@ -1,4 +1,4 @@
-import json, os, time
+import hashlib,json, os, time
 from datetime import datetime, timezone
 import httpx
 from .models import MarketInput, OrderBook, BookLevel, MarketQuality, now_iso
@@ -67,8 +67,8 @@ class PolymarketData:
    if yes_bid is not None:no_ask=max(0,min(1,1-yes_bid))
    if yes_ask is not None:no_bid=max(0,min(1,1-yes_ask))
   observed=datetime.now(timezone.utc);quote_observed=datetime.fromisoformat(book.observed_at.replace('Z','+00:00')) if book else None
-  quality=self.quality(item,book)
-  return MarketInput(market_id=str(item.get('id') or item.get('conditionId')),question=str(item.get('question','')),market_type=str(item.get('category','unknown')),price=price,volume_24h=self._number(item.get('volume24hr') or item.get('volume24h')),liquidity=self._number(item.get('liquidity')),regime='baseline',source='polymarket-clob' if book else 'polymarket-gamma',observed_at=observed,quote_observed_at=quote_observed,quality_score=quality.score,yes_bid=yes_bid,yes_ask=yes_ask,no_bid=no_bid,no_ask=no_ask,book_bids=book.bids if book else [],book_asks=book.asks if book else [],book_sequence=book.sequence if book else None,market_status='active' if item.get('active',True) and not item.get('closed',False) else 'closed')
+  quality=self.quality(item,book);snapshot_payload={'market':item,'book':book.model_dump() if book else None};snapshot_hash=hashlib.sha256(json.dumps(snapshot_payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+  return MarketInput(market_id=str(item.get('id') or item.get('conditionId')),question=str(item.get('question','')),market_type=str(item.get('category','unknown')),price=price,volume_24h=self._number(item.get('volume24hr') or item.get('volume24h')),liquidity=self._number(item.get('liquidity')),regime='baseline',source='polymarket-clob' if book else 'polymarket-gamma',observed_at=observed,quote_observed_at=quote_observed,quality_score=quality.score,snapshot_hash=snapshot_hash,yes_bid=yes_bid,yes_ask=yes_ask,no_bid=no_bid,no_ask=no_ask,book_bids=book.bids if book else [],book_asks=book.asks if book else [],book_sequence=book.sequence if book else None,market_status='active' if item.get('active',True) and not item.get('closed',False) else 'closed')
  def quality(self,market,book=None):
   reasons=[];active=bool(market.get('active',True)) and not bool(market.get('closed',False));liquid=self._number(market.get('liquidity'))>=1000 and self._number(market.get('volume24hr') or market.get('volume24h'))>=5000
   if not active:reasons.append('market_not_active')
