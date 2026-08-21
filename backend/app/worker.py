@@ -4,6 +4,7 @@ from .ingestion import IngestionRunner
 from .models import DecisionRequest,Mode
 from .fast_probability import FastMarketProbability
 from .market_policy import fast_markets_only,fast_max_resolution_hours,fast_market_allowed
+from .observability import telemetry
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'));log=logging.getLogger('vesper.pipeline')
 def _number(value,default=None):
  try:return float(value) if value not in (None,'') else default
@@ -53,18 +54,21 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
    horizon_skipped+=1;continue
   ranked.append((hours,item))
  candidate_count=len(ranked);ranked.sort(key=lambda pair:pair[0],reverse=not prefer_fast)
- from .observability import telemetry
  telemetry.set('vesper_autonomous_paper_candidate_count',candidate_count);telemetry.set('vesper_autonomous_paper_horizon_skipped',horizon_skipped);telemetry.set('vesper_autonomous_paper_min_resolution_hours',min_hours);telemetry.set('vesper_autonomous_paper_max_resolution_hours',max_hours);telemetry.set('vesper_autonomous_paper_fast_only',int(fast_only));telemetry.set('vesper_autonomous_paper_fast_max_hours',fast_max)
  for hours,item in ranked:
   if evaluated>=limit:break
   market_id=str(item.get('id') or item.get('conditionId') or '');market_type=str(item.get('category') or 'unknown')
   selection_type=f'{market_type}:{_duration_bucket(hours)}'
-  if not market_id or market_id in pending_markets or (market_id in recent and (now-recent[market_id]).total_seconds()<cooldown) or type_counts.get(selection_type,0)>=type_cap:skipped+=1;continue
+  if not market_id or market_id in pending_markets or (market_id in recent and (now-recent[market_id]).total_seconds()<cooldown) or type_counts.get(selection_type,0)>=type_cap:
+   reason='missing_market_id' if not market_id else 'pending_market' if market_id in pending_markets else 'cooldown' if market_id in recent and (now-recent[market_id]).total_seconds()<cooldown else 'type_cap'
+   skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':reason});log.info('autonomous paper skipped market=%s reason=%s',market_id or 'unknown',reason);continue
   yes_token,no_token=runner.data.token_pair(item)
-  if not yes_token or not no_token:skipped+=1;telemetry.inc('vesper_dual_book_unavailable_total',labels={'reason':'missing_token_pair'});continue
+  if not yes_token or not no_token:skipped+=1;telemetry.inc('vesper_dual_book_unavailable_total',labels={'reason':'missing_token_pair'});log.info('autonomous paper skipped market=%s reason=missing_token_pair',market_id);continue
   try:market_input=runner.data.to_input(item,yes_book=runner.data.book(yes_token),no_book=runner.data.book(no_token))
-  except Exception:skipped+=1;continue
-  if market_input.quality_score<.95 or market_input.market_status!='active':skipped+=1;continue
+  except Exception as exc:skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':'market_input_error'});log.warning('autonomous paper skipped market=%s reason=market_input_error error=%s',market_id,exc);continue
+  if market_input.quality_score<.95 or market_input.market_status!='active':
+   reason='market_quality' if market_input.quality_score<.95 else 'market_not_active'
+   skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':reason});log.info('autonomous paper skipped market=%s reason=%s quality=%.3f status=%s',market_id,reason,market_input.quality_score,market_input.market_status);continue
   try:runner.store.save_verified_input(market_input)
   except Exception as exc:skipped+=1;telemetry.error('verified_input_persist');log.warning('autonomous paper skipped market=%s reason=verified_input_persist error=%s',market_id,exc);continue
   reference=_number(item.get('reference_rate') or item.get('referenceRate'))
