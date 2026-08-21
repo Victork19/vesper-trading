@@ -92,6 +92,12 @@ Session-authenticated state-changing requests are origin-checked and API-key/ses
 
 Every negative outcome can be posted to `/outcomes`; the system updates CLV, expectancy, decision quality, and creates a scar and principle for negative process results.
 
+Scars are contextual, persistent constraints rather than a simple loss counter. They retain the strategy, market bucket, regime, model version, executable price, confidence, data quality, fill fraction, cost drag, gates and a counterfactual lesson. Repeated failures reinforce one scar and increase its evidence count; qualifying positive outcomes rehabilitate it gradually. Use `/memory/digest` to inspect the ranked lessons that would affect a future decision.
+
+Paper execution uses `paper_microstructure_v1`: observed depth, quote quality, configured fees and slippage determine a reproducible fill fraction and cost drag. A paper win is therefore not allowed to assume a full fill when the observed book cannot support it.
+
+Research reports use unique strategy/market/regime buckets, a chronological 70/30 split, and an embargo bucket between train and out-of-sample data. They report calibration bins, Brier score, log loss, calibration error, CLV, expectancy, drawdown, profit factor, cost drag and market counts. These are research diagnostics, not guarantees of profitability.
+
 `/research/report` produces a chronological 70/30 train/out-of-sample report once at least ten exposed outcomes exist. It reports win rate, expectancy, profit factor, drawdown, CLV, Brier score, independent buckets, and the observed post-Scar results. It is a research diagnostic, not a guarantee of future profitability.
 
 The continuous pipeline also resolves eligible paper decisions automatically. On each ingestion tick it checks pending
@@ -108,6 +114,12 @@ genuine edge. Tune it with `AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_C
 `AUTO_PAPER_MAX_PER_TYPE_PER_TICK`, `AUTO_PAPER_MIN_RESOLUTION_HOURS`, `AUTO_PAPER_MAX_RESOLUTION_HOURS`, and
 `AUTO_PAPER_PREFER_FAST_MARKETS`. Five-minute markets can increase sample throughput, but they require liquid books and
 should be evaluated with realistic latency and slippage assumptions.
+
+Fast-only mode is a hard constraint when `FAST_MARKETS_ONLY=true` (the default). `AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS=1`
+limits autonomous exposure to markets resolving within one hour. Slower markets are excluded before autonomous evaluation,
+and API decisions sourced from Polymarket receive `slow_market_excluded` instead of exposure when they exceed the limit.
+Existing slow pending decisions remain monitored for terminal resolution but receive no new exposure. Fast-only research
+reports exclude slow-market outcomes.
 
 For short-horizon crypto markets, the autonomous loop uses `fast_market_v2`: a conservative, calibratable drift/volatility estimate from
 public one-minute spot candles. It identifies the asset and direction from the market question, projects the configured

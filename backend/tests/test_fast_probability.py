@@ -2,6 +2,9 @@ from app.fast_probability import estimate_from_closes
 from app.market_data import PolymarketData
 from app.fast_probability import _fresh_candles
 from app.settlement import parse_terminal_resolution
+from app.adapters import paper_fill_profile
+from app.models import BookLevel
+from app.market_policy import fast_market_allowed
 
 def test_fast_probability_returns_bounded_directional_estimate():
  result=estimate_from_closes([100+i*.02 for i in range(40)],5,'up')
@@ -21,3 +24,17 @@ def test_stale_candle_series_is_rejected():
 
 def test_explicit_terminal_winner_is_supported():
  assert parse_terminal_resolution({'closed':True,'resolved':True,'finalOutcome':'Yes'}) is True
+
+def test_paper_fill_model_is_depth_aware_and_replayable():
+ class Market:
+  book_asks=[BookLevel(price=.4,size=.01)]
+  quality_score=1.0
+ first=paper_fill_profile(Market(),.02)
+ second=paper_fill_profile(Market(),.02)
+ assert first==second and first[0]==.5
+
+def test_fast_market_policy_rejects_slow_polymarket_exposure(monkeypatch):
+ monkeypatch.setenv('FAST_MARKETS_ONLY','true');monkeypatch.setenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1')
+ assert fast_market_allowed(.25,'polymarket-clob')
+ assert not fast_market_allowed(2,'polymarket-clob')
+ assert fast_market_allowed(168,'manual')

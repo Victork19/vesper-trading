@@ -48,3 +48,13 @@ def test_scar_rehabilitation_requires_qualifying_outcomes():
     assert recovered.rehabilitation_progress == recovered.rehabilitation_required
     assert recovered.resolved_at
     assert recovered.impact.max_size_multiplier == 1
+
+
+def test_repeated_failure_reinforces_one_contextual_scar():
+    memory = MemoryStub()
+    scars = ScarEngine(memory)
+    first, _ = scars.failure(decision('same-market', pnl=-.5), failure_type='negative_outcome', process_score=0)
+    second, _ = scars.failure(decision('same-market', pnl=-.2), failure_type='negative_outcome', process_score=0)
+    assert second.id == first.id
+    assert second.evidence_count == 2
+    assert second.context['market_id'] == 'same-market'

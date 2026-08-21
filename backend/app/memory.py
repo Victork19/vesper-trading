@@ -46,7 +46,17 @@ class TradingMemory:
     if created+timedelta(hours=scar.impact.cooldown_hours)>now:result.append(scar);continue
    except ValueError:pass
    result.append(scar)
-  return result
+  # Exact market scars dominate broad regime scars. The ordering is part of
+  # the memory contract: callers can cite the highest-impact lessons first.
+  return sorted(result,key=lambda scar:(
+   0 if scar.market_id==market_id else 1 if scar.market_id not in ('unknown','global') else 2,
+   0 if scar.market_type==market_type else 1,
+   -scar.severity,-scar.evidence_count
+  ))
+ def memory_digest(self,strategy_id='unknown',market_type='unknown',market_id='unknown',regime='unknown',limit=8):
+  scars=self.active_scars(strategy_id,market_type,market_id,regime)[:limit]
+  principles=[p for p in self.principles() if p.status=='active' and p.strategy_id in (strategy_id,'global') and p.regime in (regime,'global')]
+  return {'scars':[{'id':s.id,'severity':s.severity,'failure_type':s.failure_type,'lesson':s.lesson,'size_multiplier':s.impact.max_size_multiplier,'evidence_count':s.evidence_count,'recovery_score':s.recovery_score} for s in scars],'principles':[{'id':p.id,'statement':p.statement,'strength':p.strength} for p in principles[:limit]]}
  def effective_trust(self,strategy_id,market_type='unknown',market_id='unknown',regime='unknown'):
   value=self.hot().trust.get(strategy_id,.5)
   scars=self.active_scars(strategy_id,market_type,market_id,regime)

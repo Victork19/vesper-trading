@@ -36,7 +36,7 @@ def settle_decision(
     hot = memory.hot()
     hot.daily_pnl += pnl
     hot.weekly_pnl += pnl
-    hot.portfolio_heat = max(0, hot.portfolio_heat - decision.size)
+    hot.portfolio_heat = max(0, hot.portfolio_heat - decision.size * decision.paper_fill_fraction)
     trust = hot.trust.get(decision.strategy_id, 0.5)
     hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
     memory.save_hot(hot)
@@ -59,7 +59,11 @@ def settle_decision(
     telemetry.set("vesper_portfolio_heat", hot.portfolio_heat)
 
     if outcome in ("loss", "failure", "negative"):
-        scar, principle = scars.failure(decision, "Negative outcome or process result; require stronger evidence before repeating this bucket.",failure_type='negative_outcome' if outcome=='loss' else 'negative_process',process_score=measured_process_score)
+        failure_type='negative_outcome' if outcome=='loss' else 'negative_process'
+        if decision.paper_cost>abs(decision.pnl)*.25 and decision.paper_cost>0: failure_type='cost_drag'
+        elif decision.clv is not None and decision.clv<-.02: failure_type='negative_clv'
+        elif decision.resolved_yes is not None and abs(decision.fair_probability-(1.0 if decision.resolved_yes else 0.0))>=.35: failure_type='model_miscalibration'
+        scar, principle = scars.failure(decision, "Negative outcome or process result; require stronger evidence before repeating this bucket.",failure_type=failure_type,process_score=measured_process_score)
         decision.cited_scars.append(scar.id)
         decision.cited_principles.append(principle.id)
         memory.put("COLD", decision.id, decision.model_dump())
@@ -115,4 +119,5 @@ def contract_pnl(decision: DecisionRecord, resolved_yes: bool) -> tuple[str, flo
         return None
     won = resolved_yes == (decision.side == "YES")
     price = decision.executable_price if decision.executable_price is not None else decision.price
-    return ("win" if won else "loss", decision.size * (1 - price) if won else -decision.size * price)
+    size=decision.size*decision.paper_fill_fraction
+    return ("win" if won else "loss", size * (1 - price) if won else -size * price)

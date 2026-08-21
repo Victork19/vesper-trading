@@ -14,12 +14,13 @@ from .graph import ExperienceGraph
 from .risk import PortfolioRisk
 from .portfolio import ToxicFlowDetector, BucketKiller
 from .quant import ReferenceClassEngine
-from .adapters import adapter_for
+from .adapters import adapter_for,paper_fill_profile
 from .ingestion import IngestionStore
 from .autonomy import AutonomyGate
 from .observability import telemetry
 from .security import SecurityManager
 from .settlement import settle_decision
+from .market_policy import fast_market_allowed,fast_markets_only,fast_max_resolution_hours
 from datetime import datetime,timezone
 import time,uuid,json,logging
 app=FastAPI(title='Vesper Trading',version='6.0.0')
@@ -99,6 +100,9 @@ def strategy_list(_=Depends(require_api_key)):return [x.__dict__ for x in strate
 def list_scars(_=Depends(require_api_key)):return memory.scars()
 @app.get('/principles',response_model=list[Principle])
 def list_principles(_=Depends(require_api_key)):return memory.principles()
+@app.get('/memory/digest')
+def memory_digest(strategy_id:str='reference_class',market_type:str='unknown',market_id:str='unknown',regime:str='baseline',_=Depends(require_api_key)):
+ return memory.memory_digest(strategy_id,market_type,market_id,regime)
 @app.get('/decisions',response_model=list[DecisionRecord])
 def list_decisions(_=Depends(require_api_key)):return memory.decisions()
 @app.get('/metrics',response_model=list[ProcessSnapshot])
@@ -164,31 +168,45 @@ def readiness_summary(_=Depends(require_api_key)):
  if not (memory.get('HOT','live_approval') or {}).get('active'):blockers.append('Explicit operator live approval has not been granted.')
  blockers.append('Authenticated Polymarket CLOB execution and order reconciliation are not production-enabled.')
  learning='collecting' if not exposed else 'learning' if len(resolved_keys)<minimum else 'evidence_ready'
- return {'status':'paper_learning','learning_status':learning,'summary':f'{len(exposed)} exposed paper decisions across {len({key(d) for d in exposed})} independent market-strategy buckets; {len(resolved_keys)} resolved; {len(pending_keys)} awaiting settlement.','automation':{'enabled':os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true','decisions_per_tick':max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3'))),'cooldown_seconds':max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600'))),'min_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05'))),'max_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24'))),'prefer_fast_markets':os.getenv('AUTO_PAPER_PREFER_FAST_MARKETS','true').lower()=='true'},'paper':{'decisions':len(decisions),'exposed':len(exposed),'independent_buckets':len({key(d) for d in exposed}),'resolved':resolved_count,'independent_resolved':len(resolved_keys),'pending':len(pending),'independent_pending':len(pending_keys),'wins':wins,'win_rate':wins/resolved_count if resolved_count else None,'pnl':pnl,'metrics_buckets':len(snapshots),'minimum_sample':minimum},'research':research_report(decisions),'data':{'snapshots':q['snapshots'],'minimum_snapshots':int(os.getenv('MIN_MARKET_SNAPSHOTS','1000')),'quality':q['score'],'book_coverage':q.get('book_coverage',0),'stale':q['stale']},'worker':{'status':worker.get('status'),'last_resolved':worker.get('last_resolved',0),'last_pending':worker.get('last_pending',0)},'live':{'eligible':False,'blockers':blockers}}
+ return {'status':'paper_learning','learning_status':learning,'summary':f'{len(exposed)} exposed paper decisions across {len({key(d) for d in exposed})} independent market-strategy buckets; {len(resolved_keys)} resolved; {len(pending_keys)} awaiting settlement.','automation':{'enabled':os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true','decisions_per_tick':max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3'))),'cooldown_seconds':max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600'))),'min_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05'))),'max_resolution_hours':min(max(.01,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24'))),max(.01,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1')))),'fast_markets_only':os.getenv('FAST_MARKETS_ONLY','true').lower()=='true','fast_max_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1'))),'prefer_fast_markets':True},'paper':{'decisions':len(decisions),'exposed':len(exposed),'independent_buckets':len({key(d) for d in exposed}),'resolved':resolved_count,'independent_resolved':len(resolved_keys),'pending':len(pending),'independent_pending':len(pending_keys),'wins':wins,'win_rate':wins/resolved_count if resolved_count else None,'pnl':pnl,'metrics_buckets':len(snapshots),'minimum_sample':minimum},'research':research_report(decisions),'data':{'snapshots':q['snapshots'],'minimum_snapshots':int(os.getenv('MIN_MARKET_SNAPSHOTS','1000')),'quality':q['score'],'book_coverage':q.get('book_coverage',0),'stale':q['stale']},'worker':{'status':worker.get('status'),'last_resolved':worker.get('last_resolved',0),'last_pending':worker.get('last_pending',0)},'live':{'eligible':False,'blockers':blockers}}
 
 def _research_slice(items):
- if not items:return {'count':0,'wins':0,'win_rate':None,'pnl':0.0,'expectancy':None,'profit_factor':None,'max_drawdown':0.0,'avg_clv':None,'brier':None}
+ if not items:return {'count':0,'wins':0,'win_rate':None,'pnl':0.0,'expectancy':None,'profit_factor':None,'max_drawdown':0.0,'avg_clv':None,'brier':None,'log_loss':None,'calibration_error':None,'avg_edge':None,'cost_drag':0.0,'unique_markets':0}
  wins=sum(1 for d in items if d.outcome=='win');pnl=sum(float(d.pnl) for d in items);profits=sum(max(0,float(d.pnl)) for d in items);losses=sum(min(0,float(d.pnl)) for d in items);equity=peak=drawdown=0.0
  for d in items:
   equity+=float(d.pnl);peak=max(peak,equity);drawdown=max(drawdown,peak-equity)
  scored=[d for d in items if d.resolved_yes is not None];brier=sum((d.fair_probability-(1.0 if d.resolved_yes else 0.0))**2 for d in scored)/len(scored) if scored else None
+ log_loss=sum(-(1.0 if d.resolved_yes else 0.0)*math.log(max(.0001,min(.9999,d.fair_probability)))-(0.0 if d.resolved_yes else 1.0)*math.log(max(.0001,min(.9999,1-d.fair_probability))) for d in scored)/len(scored) if scored else None
+ calibration_error=sum(abs(d.fair_probability-(1.0 if d.resolved_yes else 0.0)) for d in scored)/len(scored) if scored else None
  clvs=[float(d.clv) for d in items if d.clv is not None]
- return {'count':len(items),'wins':wins,'win_rate':wins/len(items),'pnl':pnl,'expectancy':pnl/len(items),'profit_factor':profits/abs(losses) if losses else None,'max_drawdown':drawdown,'avg_clv':sum(clvs)/len(clvs) if clvs else None,'brier':brier}
+ costs=sum(float(d.paper_cost) for d in items);return {'count':len(items),'wins':wins,'win_rate':wins/len(items),'pnl':pnl,'expectancy':pnl/len(items),'profit_factor':profits/abs(losses) if losses else None,'max_drawdown':drawdown,'avg_clv':sum(clvs)/len(clvs) if clvs else None,'brier':brier,'log_loss':log_loss,'calibration_error':calibration_error,'avg_edge':sum(float(d.edge) for d in items)/len(items),'cost_drag':costs,'unique_markets':len({d.market_id for d in items})}
 
 def research_report(decisions):
- raw=sorted([d for d in decisions if d.size>0 and d.outcome not in ('pending','void')],key=lambda d:d.created_at);groups={}
+ fast_only=fast_markets_only();fast_max=fast_max_resolution_hours()
+ eligible=[d for d in decisions if d.size>0 and d.outcome not in ('pending','void') and (not fast_only or float(d.market_context.get('resolution_hours',999999))<=fast_max)]
+ excluded_slow=sum(1 for d in decisions if d.size>0 and d.outcome not in ('pending','void') and d not in eligible)
+ raw=sorted(eligible,key=lambda d:d.created_at);groups={}
  for decision in raw:groups.setdefault(f'{decision.strategy_id}:{decision.market_id}:{decision.regime}',[]).append(decision)
  resolved=[]
  for bucket in groups.values():
   first=bucket[0];pnl=sum(float(d.pnl) for d in bucket);clvs=[float(d.clv) for d in bucket if d.clv is not None];resolved.append(first.model_copy(update={'pnl':pnl,'clv':sum(clvs)/len(clvs) if clvs else None,'outcome':'win' if pnl>0 else 'loss' if pnl<0 else 'push'}))
  resolved.sort(key=lambda d:d.created_at);split=max(0,int(len(resolved)*.7));train=resolved[:split];test=resolved[split:]
+ # A market is the unit of information. Repeated quotes are exposures, not
+ # independent evidence. The one-bucket embargo prevents the first OOS bucket
+ # from sharing the same immediate market state as the training tail.
+ embargo=int(os.getenv('RESEARCH_EMBARGO_BUCKETS','1'))
+ embargo_items=test[:embargo];test=test[embargo:]
+ bins=[]
+ for lower in (0,.2,.4,.6,.8):
+  upper=lower+.2;bucket=[d for d in resolved if lower<=d.fair_probability<(upper if upper<1 else 1.0001)]
+  if bucket:bins.append({'range':[lower,min(1,upper)],'count':len(bucket),'predicted':sum(d.fair_probability for d in bucket)/len(bucket),'actual':sum(1 for d in bucket if d.outcome=='win')/len(bucket)})
  scars=memory.scars();post=[]
  for scar in scars:
   try:created=datetime.fromisoformat(scar.created_at.replace('Z','+00:00'))
   except ValueError:continue
   bucket=[d for d in resolved if d.strategy_id==scar.strategy_id and d.market_type==scar.market_type and d.regime==scar.regime and datetime.fromisoformat(d.created_at.replace('Z','+00:00'))>created]
   if bucket:post.append({'scar_id':scar.id,'status':scar.status,'outcomes':len(bucket),'pnl':sum(float(d.pnl) for d in bucket),'win_rate':sum(1 for d in bucket if d.outcome=='win')/len(bucket)})
- return {'status':'insufficient_data' if len(resolved)<10 else 'available','resolved_exposures':len(raw),'independent_buckets':len(resolved),'independent_resolved':len(resolved),'minimum_for_oos':10,'train':_research_slice(train),'out_of_sample':_research_slice(test),'scar_effectiveness':post}
+ return {'status':'insufficient_data' if len(resolved)<10 else 'available','fast_markets_only':fast_only,'fast_max_resolution_hours':fast_max,'excluded_slow_resolved_exposures':excluded_slow,'resolved_exposures':len(raw),'independent_buckets':len(resolved),'independent_resolved':len(resolved),'minimum_for_oos':10,'split_method':'chronological_market_bucket_70_30_with_embargo','embargoed_buckets':len(embargo_items),'calibration_bins':bins,'warnings':['insufficient_resolved_outcomes'] if len(resolved)<10 else [],'train':_research_slice(train),'out_of_sample':_research_slice(test),'scar_effectiveness':post}
 
 @app.get('/research/report')
 def research(_=Depends(require_api_key)):return research_report(memory.decisions())
@@ -242,6 +260,7 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
  if quote_time is not None and (datetime.now(timezone.utc)-quote_time).total_seconds()>120:quality_gates.append('stale_market_input')
  if req.market.quality_score<.95:quality_gates.append('market_quality_below_threshold')
  if req.market.market_status!='active':quality_gates.append('market_not_active')
+ if not fast_market_allowed(req.market.resolution_hours,req.market.source):quality_gates.append('slow_market_excluded')
  if not has_reference_evidence and req.market.source.startswith('polymarket'):quality_gates.append('reference_evidence_required')
  if h.mode in (Mode.SHADOW,Mode.LIVE) and req.market.source=='manual':quality_gates.append('untrusted_market_source')
  if h.mode in (Mode.SHADOW,Mode.LIVE) and (req.market.yes_ask is None or req.market.no_ask is None):quality_gates.append('executable_quote_required')
@@ -257,7 +276,9 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
   if settings.max_order_size<=0:size=0;gates+=['live_order_limit_gate']
   else:size=min(size,settings.max_order_size)
  action='DO NOTHING' if size<=0 else 'BUY';risk_score=min(10,max(1,int(e.raw_edge*100+(10 if relevant else 3))));rationale=('No trade: '+'; '.join(gates)) if size<=0 else 'Calibrated probability, executable side edge, liquidity, capacity, trust, scars, and portfolio gates passed.';status='paper' if h.mode==Mode.PAPER else 'shadow' if h.mode==Mode.SHADOW else 'live-gated'
- d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=e.raw_edge*size,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,model_version=req.market.model_version,raw_model_probability=req.market.raw_model_probability,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence)
+ fill_fraction,fill_reason=paper_fill_profile(req.market,size) if h.mode==Mode.PAPER and size>0 else (1.0,'non_paper_or_zero_size')
+ paper_cost=max(0.0,(e.executable_price-req.market.price)*size*fill_fraction) if h.mode==Mode.PAPER else 0.0
+ d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=e.raw_edge*size*fill_fraction,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,model_version=req.market.model_version,raw_model_probability=req.market.raw_model_probability,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence,fill_model_version='paper_microstructure_v1' if h.mode==Mode.PAPER else None,paper_fill_fraction=fill_fraction,paper_cost=paper_cost,paper_fill_reason=fill_reason,market_context={'resolution_hours':req.market.resolution_hours,'market_end_time':req.market.market_end_time.isoformat() if req.market.market_end_time else None,'yes_bid':req.market.yes_bid,'yes_ask':req.market.yes_ask,'no_bid':req.market.no_bid,'no_ask':req.market.no_ask,'liquidity':req.market.liquidity,'volume_24h':req.market.volume_24h,'fee_rate':req.market.fee_rate,'slippage_bps':req.market.slippage_bps})
  telemetry.inc('vesper_decisions_total',labels={'mode':h.mode.value,'action':action,'strategy':req.strategy_id});telemetry.set('vesper_portfolio_heat',h.portfolio_heat)
  memory.put('COLD',d.id,d.model_dump());memory.event('decision',d.model_dump())
  if req.execute and d.size>0:
@@ -277,7 +298,8 @@ def outcome(req:OutcomeRequest,_=Depends(require_trade)):
   won=req.resolved_yes==(d.side=='YES')
   if req.outcome in ('win','loss') and ((req.outcome=='win')!=won):raise HTTPException(422,'Outcome conflicts with resolved market result')
   if req.outcome in ('win','loss') and d.executable_price is not None:
-   settled_pnl=d.size*(1-d.executable_price) if won else -d.size*d.executable_price
+   effective_size=d.size*d.paper_fill_fraction
+   settled_pnl=effective_size*(1-d.executable_price) if won else -effective_size*d.executable_price
  return settle_decision(memory,metrics_engine,scars,d,req.outcome,settled_pnl,req.clv,req.resolved_yes,req.evidence_complete,'operator',process_score=req.process_score)
 @app.post('/demo/clear-learning')
 def clear_learning(_=Depends(require_admin)):memory.delete_learning_memory();return {'message':'Learning memory removed; the agent returns to naive behavior.'}

@@ -50,7 +50,24 @@ class ScarEngine:
   severity=min(10,max(1,6+int(abs(min(0,d.pnl))*2)+int(abs(min(0,d.clv or 0))*10)))
   principle='Reduce size and require stronger evidence before repeating this strategy and market condition.'
   now=datetime.now(timezone.utc);cooldown_hours=24+severity*4
-  s=Scar(id='scar_'+uuid.uuid4().hex[:8],strategy_id=d.strategy_id,market_id=d.market_id,market_type=d.market_type,regime=d.regime,type=failure_type,failure_type=failure_type,severity=severity,pnl=d.pnl,clv=d.clv or 0,process_score=process_score,lesson=reason,principle=principle,impact=Impact(trust_delta=-min(.4,.1+severity*.02),max_size_multiplier=max(.2,.8-severity*.05),cooldown_hours=cooldown_hours),affected_buckets=[d.strategy_id,d.market_type,d.regime],cooldown_until=(now+timedelta(hours=cooldown_hours)).isoformat().replace('+00:00','Z'))
+  context={
+   'market_id':d.market_id,'market_type':d.market_type,'regime':d.regime,
+   'model_version':d.model_version,'fair_probability':d.fair_probability,
+   'raw_model_probability':d.raw_model_probability,'price':d.price,
+   'executable_price':d.executable_price,'edge':d.edge,'confidence':d.confidence,
+   'quality_score':d.quality_score,'fill_model_version':d.fill_model_version,
+   'paper_fill_fraction':d.paper_fill_fraction,'paper_cost':d.paper_cost,
+   'gates':d.gates,
+  }
+  # Repeated failures in the same bucket update one memory rather than
+  # creating hundreds of identical scars. This keeps memory actionable.
+  existing=next((x for x in self.memory.scars() if x.status in ('active','rehabilitating') and x.strategy_id==d.strategy_id and x.market_type==d.market_type and x.regime==d.regime and x.failure_type==failure_type),None)
+  if existing:
+   existing.evidence_count+=1;existing.severity=max(existing.severity,severity);existing.pnl+=d.pnl;existing.clv=(existing.clv*(existing.evidence_count-1)+(d.clv or 0))/existing.evidence_count;existing.process_score=min(existing.process_score,process_score);existing.context=context;existing.lesson=reason;existing.last_evaluated_at=now_iso();existing.rehabilitation_progress=0;existing.status='active';existing.impact.max_size_multiplier=max(.1,existing.impact.max_size_multiplier-.05);existing.impact.trust_delta=max(-.5,existing.impact.trust_delta-.03);existing.cooldown_until=(now+timedelta(hours=cooldown_hours)).isoformat().replace('+00:00','Z')
+   self.memory.put('WARM',existing.id,existing.model_dump());self.memory.event('scar_reinforced',existing.model_dump());p=next((p for p in getattr(self.memory,'principles',lambda:[])() if existing.id in p.source_scars),None)
+   if p:return existing,p
+   return existing,Principle(id='principle_'+uuid.uuid4().hex[:7],statement=existing.principle,source_scars=[existing.id],strength=min(10,3+existing.severity//2),strategy_id=existing.strategy_id,regime=existing.regime)
+  s=Scar(id='scar_'+uuid.uuid4().hex[:8],strategy_id=d.strategy_id,market_id=d.market_id,market_type=d.market_type,regime=d.regime,type=failure_type,failure_type=failure_type,severity=severity,pnl=d.pnl,clv=d.clv or 0,process_score=process_score,lesson=reason,principle=principle,impact=Impact(trust_delta=-min(.4,.1+severity*.02),max_size_multiplier=max(.2,.8-severity*.05),cooldown_hours=cooldown_hours),affected_buckets=[d.strategy_id,d.market_type,d.regime],context=context,counterfactual='The trade was only valid if its edge survived the observed spread, fees, slippage, and actual fill fraction.',last_evaluated_at=now_iso(),cooldown_until=(now+timedelta(hours=cooldown_hours)).isoformat().replace('+00:00','Z'))
   self.memory.put('WARM',s.id,s.model_dump());self.memory.event('scar_created',s.model_dump());p=Principle(id='principle_'+uuid.uuid4().hex[:7],statement=s.principle,source_scars=[s.id],strength=min(10,3+severity//2),strategy_id=d.strategy_id,regime=d.regime);self.memory.put('WARM',p.id,p.model_dump());return s,p
  def rehabilitate(self,d,clv=0.0):
   changed=[]
@@ -63,7 +80,7 @@ class ScarEngine:
     if decision_created<scar_created:continue
    except (TypeError,ValueError):continue
    if clv<0 or any(x in d.gates for x in ('daily_kill_switch','weekly_kill_switch','scar_constitutional_stop')):continue
-   scar.status='rehabilitating';scar.rehabilitation_progress=min(scar.rehabilitation_required,scar.rehabilitation_progress+1);scar.impact.max_size_multiplier=min(1.0,scar.impact.max_size_multiplier+.1)
+   scar.status='rehabilitating';scar.rehabilitation_progress=min(scar.rehabilitation_required,scar.rehabilitation_progress+1);scar.recovery_score=min(1.0,scar.rehabilitation_progress/max(1,scar.rehabilitation_required));scar.impact.max_size_multiplier=min(1.0,scar.impact.max_size_multiplier+.1);scar.last_evaluated_at=now_iso()
    if scar.rehabilitation_progress>=scar.rehabilitation_required:scar.status='rehabilitated';scar.resolved_at=now_iso();scar.impact.trust_delta=0;scar.impact.max_size_multiplier=1.0
    self.memory.put('WARM',scar.id,scar.model_dump());self.memory.event('scar_rehabilitation_progress',{'scar_id':scar.id,'progress':scar.rehabilitation_progress,'required':scar.rehabilitation_required,'status':scar.status});changed.append(scar)
   return changed

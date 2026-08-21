@@ -3,6 +3,7 @@ from datetime import datetime,timezone
 from .ingestion import IngestionRunner
 from .models import DecisionRequest,Mode
 from .fast_probability import FastMarketProbability
+from .market_policy import fast_markets_only,fast_max_resolution_hours,fast_market_allowed
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'));log=logging.getLogger('vesper.pipeline')
 def _number(value,default=None):
  try:return float(value) if value not in (None,'') else default
@@ -14,11 +15,13 @@ def _end_time(item):
  except (TypeError,ValueError):return None
 def _duration_bucket(hours):
  return '5m' if hours<=.25 else 'intraday' if hours<=24 else 'daily'
+def _fast_max_hours():
+ return fast_max_resolution_hours()
 
 def autonomous_paper_cycle(runner,memory,decide_fn):
  enabled=os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true'
  if not enabled or memory.hot().mode!=Mode.PAPER:return {'enabled':enabled,'evaluated':0,'traded':0,'skipped':0,'reason':'disabled_or_not_paper'}
- limit=max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3')));cooldown=max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')));type_cap=max(1,int(os.getenv('AUTO_PAPER_MAX_PER_TYPE_PER_TICK','1')));min_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));max_hours=max(min_hours,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24')));prefer_fast=os.getenv('AUTO_PAPER_PREFER_FAST_MARKETS','true').lower()=='true'
+ limit=max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3')));cooldown=max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')));type_cap=max(1,int(os.getenv('AUTO_PAPER_MAX_PER_TYPE_PER_TICK','1')));min_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));configured_max=max(min_hours,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24')));fast_only=fast_markets_only();fast_max=_fast_max_hours();max_hours=min(configured_max,fast_max) if fast_only else configured_max;prefer_fast=True
  now=datetime.now(timezone.utc);recent={};pending_markets=set();fast_model=FastMarketProbability()
  for decision in memory.decisions():
   if decision.source.startswith('polymarket'):
@@ -43,7 +46,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn):
   ranked.append((hours,item))
  candidate_count=len(ranked);ranked.sort(key=lambda pair:pair[0],reverse=not prefer_fast)
  from .observability import telemetry
- telemetry.set('vesper_autonomous_paper_candidate_count',candidate_count);telemetry.set('vesper_autonomous_paper_horizon_skipped',horizon_skipped);telemetry.set('vesper_autonomous_paper_min_resolution_hours',min_hours);telemetry.set('vesper_autonomous_paper_max_resolution_hours',max_hours)
+ telemetry.set('vesper_autonomous_paper_candidate_count',candidate_count);telemetry.set('vesper_autonomous_paper_horizon_skipped',horizon_skipped);telemetry.set('vesper_autonomous_paper_min_resolution_hours',min_hours);telemetry.set('vesper_autonomous_paper_max_resolution_hours',max_hours);telemetry.set('vesper_autonomous_paper_fast_only',int(fast_only));telemetry.set('vesper_autonomous_paper_fast_max_hours',fast_max)
  for hours,item in ranked:
   if evaluated>=limit:break
   market_id=str(item.get('id') or item.get('conditionId') or '');market_type=str(item.get('category') or 'unknown')
@@ -71,7 +74,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn):
   if decision.size>0:traded+=1;pending_markets.add(market_id)
   log.info('autonomous paper evaluation market=%s horizon_hours=%.3f bucket=%s action=%s size=%.6f edge=%.6f',market_id,hours,selection_type,decision.action,decision.size,decision.edge)
  telemetry.inc('vesper_autonomous_paper_evaluations_total',value=evaluated);telemetry.inc('vesper_autonomous_paper_trades_total',value=traded);telemetry.set('vesper_autonomous_paper_enabled',1)
- return {'enabled':True,'evaluated':evaluated,'traded':traded,'skipped':skipped,'horizon_skipped':horizon_skipped,'candidates':candidate_count,'min_resolution_hours':min_hours,'max_resolution_hours':max_hours}
+ return {'enabled':True,'evaluated':evaluated,'traded':traded,'skipped':skipped,'horizon_skipped':horizon_skipped,'candidates':candidate_count,'min_resolution_hours':min_hours,'max_resolution_hours':max_hours,'fast_only':fast_only,'fast_max_hours':fast_max}
 
 def run():
  runner=IngestionRunner();interval=int(os.getenv('PIPELINE_INTERVAL_SECONDS','60'));from .main import decide,memory;log.info('pipeline started interval=%ss auto_paper=%s',interval,os.getenv('AUTO_PAPER_ENABLED','true'))
