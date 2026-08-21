@@ -4,6 +4,9 @@ from pydantic import ValidationError
 from app.models import BookLevel, OrderBook
 from fastapi.testclient import TestClient
 from app.main import app
+from app.main import memory as trading_memory
+from app.resolver import OutcomeResolver
+from app.settlement import parse_terminal_resolution
 c=TestClient(app,headers={'X-Vesper-Key':'client-test-key'})
 admin={'X-Vesper-Key':'admin-test-key'}
 def test_health(): assert c.get('/health').json()['memory_load_bearing'] is True
@@ -57,6 +60,22 @@ def test_paper_execution_creates_durable_order_record():
  assert body['order_id']
  order=c.get('/orders/'+body['order_id']).json()
  assert order['status']=='filled' and order['filled_size']==body['size']
+
+def test_resolver_settles_only_unambiguous_terminal_market():
+ class FakeData:
+  def market(self,market_id):
+   if market_id!='resolver-market': raise RuntimeError('unrelated test market')
+   return {'id':market_id,'closed':True,'resolved':True,'outcomes':['Yes','No'],'outcomePrices':['1','0']}
+ payload={'market':{'market_id':'resolver-market','question':'Will event resolve yes?','price':.40,'liquidity':25000,'volume_24h':100000,'reference_rate':.70},'strategy_id':'reference_class','execute':True}
+ decision=c.post('/decide',json=payload).json()
+ result=OutcomeResolver(memory=trading_memory,data=FakeData()).tick()
+ assert result['settled']==1
+ settled=next(item for item in trading_memory.decisions() if item.id==decision['id'])
+ assert settled.outcome=='win' and settled.resolved_yes is True
+ assert OutcomeResolver(memory=trading_memory,data=FakeData()).tick()['settled']==0
+
+def test_resolver_ignores_closed_market_without_terminal_prices():
+ assert parse_terminal_resolution({'closed':True,'outcomes':['Yes','No'],'outcomePrices':['0.5','0.5']}) is None
 
 def test_crossed_order_book_is_rejected():
  with pytest.raises(ValidationError):

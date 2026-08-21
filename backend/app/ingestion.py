@@ -2,6 +2,7 @@ import hashlib,json,sqlite3,time,os,threading
 from datetime import datetime,timezone
 from .market_data import PolymarketData
 from .observability import telemetry
+from .resolver import OutcomeResolver
 class IngestionStore:
  def __init__(self,path=None):
   self.path=path or os.getenv('SIBYL_DB_PATH','./data/trading.db');self.require_books=os.getenv('INGEST_REQUIRE_BOOKS','true').lower()=='true';self.lock=threading.RLock();self.db=sqlite3.connect(self.path,timeout=30,check_same_thread=False);self.db.execute('PRAGMA journal_mode=WAL');self.db.execute('PRAGMA synchronous=FULL');self.db.execute('PRAGMA busy_timeout=30000');self.db.execute('CREATE TABLE IF NOT EXISTS market_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,market_id TEXT,observed_at TEXT,payload TEXT,payload_hash TEXT UNIQUE)');self.db.execute('CREATE TABLE IF NOT EXISTS market_observations(id INTEGER PRIMARY KEY AUTOINCREMENT,market_id TEXT,observed_at TEXT,payload_hash TEXT,valid INTEGER NOT NULL,book_valid INTEGER NOT NULL DEFAULT 0,book_sequence INTEGER)');self.db.execute('CREATE INDEX IF NOT EXISTS idx_market_observations_observed ON market_observations(observed_at)')
@@ -49,7 +50,7 @@ class IngestionStore:
   if not row:return {'status':'unknown'}
   data=dict(zip(('last_tick_at','last_success_at','last_error_at','last_error','error_count','last_markets','last_books'),row));last=data.get('last_success_at') or data.get('last_tick_at');data['stale']=not last or (datetime.now(timezone.utc)-datetime.fromisoformat(last)).total_seconds()>180;data['status']='degraded' if data['stale'] or data.get('last_error') else 'healthy';return data
 class IngestionRunner:
- def __init__(self):self.data=PolymarketData();self.store=IngestionStore()
+ def __init__(self):self.data=PolymarketData();self.store=IngestionStore();self.resolver=OutcomeResolver(data=self.data)
  def tick(self,limit=50):
   items=self.data.markets(limit);saved=0;books=0;telemetry.inc('vesper_ingestion_ticks_total')
   for item in items:
@@ -62,4 +63,4 @@ class IngestionRunner:
      book=self.data.book(str(tokens[0]));enriched['_vesper_book']=book.model_dump();books+=1
     except Exception as exc:enriched['_vesper_book_error']=str(exc);telemetry.error('book_fetch')
    saved+=int(self.store.save(enriched))
-  self.store.record_heartbeat(len(items),books);return {'markets':len(items),'books':books,'new_snapshots':saved,'observations':self.store.count()}
+  self.store.record_heartbeat(len(items),books);resolution=self.resolver.tick();return {'markets':len(items),'books':books,'new_snapshots':saved,'observations':self.store.count(),'resolution':resolution}

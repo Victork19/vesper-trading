@@ -19,6 +19,7 @@ from .ingestion import IngestionStore
 from .autonomy import AutonomyGate
 from .observability import telemetry
 from .security import SecurityManager
+from .settlement import settle_decision
 from datetime import datetime,timezone
 import time,uuid,json,logging
 app=FastAPI(title='Vesper Trading',version='6.0.0')
@@ -215,11 +216,7 @@ def outcome(req:OutcomeRequest,_=Depends(require_trade)):
   if req.outcome in ('win','loss') and ((req.outcome=='win')!=won):raise HTTPException(422,'Outcome conflicts with resolved market result')
   if req.outcome in ('win','loss') and d.executable_price is not None:
    settled_pnl=d.size*(1-d.executable_price) if won else -d.size*d.executable_price
- d.outcome=req.outcome;d.pnl=settled_pnl;d.clv=req.clv;d.resolved_yes=req.resolved_yes;memory.put('COLD',d.id,d.model_dump());h=memory.hot();h.daily_pnl+=settled_pnl;h.weekly_pnl+=settled_pnl;h.portfolio_heat=max(0,h.portfolio_heat-d.size);raw_trust=h.trust.get(d.strategy_id,.5);h.trust[d.strategy_id]=max(0,min(1,raw_trust+(.02 if settled_pnl>0 else -.05 if settled_pnl<0 else 0)));memory.save_hot(h);snapshot=metrics_engine.outcome(d,settled_pnl,req.clv,1.0 if req.evidence_complete else .5);memory.event('outcome_recorded',{'decision_id':d.id,'outcome':req.outcome,'settled_pnl':settled_pnl,'snapshot':snapshot.model_dump()})
- telemetry.inc('vesper_outcomes_total',labels={'outcome':req.outcome});telemetry.set('vesper_daily_pnl',h.daily_pnl);telemetry.set('vesper_weekly_pnl',h.weekly_pnl);telemetry.set('vesper_portfolio_heat',h.portfolio_heat)
- if req.outcome in ('loss','failure','negative'):
-  s,p=scars.failure(d,'Negative outcome or process result; require stronger evidence before repeating this bucket.');d.cited_scars.append(s.id);d.cited_principles.append(p.id);memory.put('COLD',d.id,d.model_dump())
- return d
+ return settle_decision(memory,metrics_engine,scars,d,req.outcome,settled_pnl,req.clv,req.resolved_yes,req.evidence_complete,'operator')
 @app.post('/demo/clear-learning')
 def clear_learning(_=Depends(require_admin)):memory.delete_learning_memory();return {'message':'Learning memory removed; the agent returns to naive behavior.'}
 @app.post('/demo/seed-market')

@@ -71,6 +71,12 @@ For production operations, review [SECURITY.md](SECURITY.md), run the paper/shad
 
 Every negative outcome can be posted to `/outcomes`; the system updates CLV, expectancy, decision quality, and creates a scar and principle for negative process results.
 
+The continuous pipeline also resolves eligible paper decisions automatically. On each ingestion tick it checks pending
+decisions against their Polymarket market IDs and settles only markets that are closed/resolved with an unambiguous binary
+`1/0` outcome price. Automatic settlements update PnL, trust, process metrics, scars, principles, and the audit journal in
+the same path as manual `/outcomes` submissions. Configure `RESOLUTION_BATCH_SIZE` to control the maximum number checked
+per pipeline tick (default `25`). Ambiguous, unresolved, manual, or unavailable markets remain pending.
+
 ## Current implementation boundary
 
 The safe core is implemented: continuous market snapshot ingestion, persistent local storage, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, replay, and a dashboard that shows the decision gates.
