@@ -8,10 +8,14 @@ from app.market_policy import fast_market_allowed
 
 def test_fast_probability_returns_bounded_directional_estimate():
  result=estimate_from_closes([100+i*.02 for i in range(40)],5,'up')
- assert result and .05<=result['probability']<=.95 and result['model_version']=='fast_market_v2'
+ assert result and .05<=result['probability']<=.95 and result['model_version']=='fast_market_v3' and result['lower_bound']<=result['probability']<=result['upper_bound']
 
 def test_fast_probability_requires_enough_history():
  assert estimate_from_closes([100,100.1,100.2],5,'up') is None
+
+def test_fast_probability_is_uncertain_on_flat_prices():
+ result=estimate_from_closes([100.0]*40,5,'up')
+ assert result and abs(result['probability']-.5)<.02 and result['confidence']<.85 and result['regime'] in ('range','mean_reversion')
 
 def test_market_input_preserves_expiry_and_paper_costs(monkeypatch):
  monkeypatch.setenv('PAPER_FEE_RATE','.02');monkeypatch.setenv('PAPER_SLIPPAGE_BPS','10')

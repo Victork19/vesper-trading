@@ -16,7 +16,7 @@ class HotState(BaseModel): mode:Mode=Mode.PAPER; trust:dict[str,float]=Field(def
 class MarketInput(BaseModel):
  market_id:str; question:str; market_type:str='unknown'; price:float=Field(ge=0,le=1)
  volume_24h:float=Field(default=0,ge=0); liquidity:float=Field(default=0,ge=0); resolution_hours:float=Field(default=168,gt=0)
- regime:str='baseline'; reference_rate:float|None=Field(default=None,ge=0,le=1); signals:dict[str,float]=Field(default_factory=dict)
+ regime:str='baseline'; reference_rate:float|None=Field(default=None,ge=0,le=1); signals:dict[str,float]=Field(default_factory=dict); model_lower_bound:float|None=Field(default=None,ge=0,le=1); model_upper_bound:float|None=Field(default=None,ge=0,le=1); model_uncertainty:float|None=Field(default=None,ge=0,le=1)
  source:str='manual'; model_version:str|None=None; raw_model_probability:float|None=None; observed_at:datetime|None=None; quote_observed_at:datetime|None=None; quality_score:float=Field(default=1,ge=0,le=1); snapshot_hash:str|None=None; market_status:str='active'; market_end_time:datetime|None=None; book_bids:list[BookLevel]=Field(default_factory=list); book_asks:list[BookLevel]=Field(default_factory=list); book_sequence:int|None=None
  yes_token_id:str|None=None; no_token_id:str|None=None
  yes_bid:float|None=Field(default=None,ge=0,le=1); yes_ask:float|None=Field(default=None,ge=0,le=1)
@@ -63,7 +63,7 @@ class DecisionRecord(BaseModel):
     status:str='paper'; outcome:str='pending'; pnl:float=0; clv:float|None=None
     resolved_yes:bool|None=None; order_id:str|None=None
     source:str='manual'; model_version:str|None=None; raw_model_probability:float|None=None; quality_score:float=1; snapshot_hash:str|None=None; observed_at:str|None=None; quote_observed_at:str|None=None; book_sequence:int|None=None
-    fill_model_version:str|None=None; paper_fill_fraction:float=Field(default=1,ge=0,le=1); paper_cost:float=Field(default=0,ge=0); paper_fill_reason:str|None=None; market_context:dict[str,Any]=Field(default_factory=dict)
+    fill_model_version:str|None=None; model_lower_bound:float|None=Field(default=None,ge=0,le=1); model_upper_bound:float|None=Field(default=None,ge=0,le=1); model_uncertainty:float|None=Field(default=None,ge=0,le=1); paper_fill_fraction:float=Field(default=1,ge=0,le=1); paper_cost:float=Field(default=0,ge=0); paper_fill_reason:str|None=None; market_context:dict[str,Any]=Field(default_factory=dict)
 
 class OrderBook(BaseModel):
     token_id:str; observed_at:str; bids:list[BookLevel]=Field(default_factory=list); asks:list[BookLevel]=Field(default_factory=list)

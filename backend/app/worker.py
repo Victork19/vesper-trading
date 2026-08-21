@@ -64,7 +64,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn):
   model=fast_model.estimate(item,market_input,memory) if reference is None else None
   if model is not None:
    telemetry.inc('vesper_fast_model_estimates_total',labels={'model_version':model['model_version'],'asset':model['asset']})
-   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_version=model['model_version'];market_input.signals={'fast_model':model['probability']}
+   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_version=model['model_version'];market_input.model_lower_bound=model['lower_bound'];market_input.model_upper_bound=model['upper_bound'];market_input.model_uncertainty=model['uncertainty'];market_input.regime=model['regime'];market_input.signals={'fast_model':model['probability']};telemetry.set('vesper_fast_model_uncertainty',model['uncertainty']);telemetry.inc('vesper_fast_model_regime_total',labels={'regime':model['regime']})
   elif reference is not None:market_input.reference_rate=max(0,min(1,reference))
   else:skipped+=1;telemetry.inc('vesper_fast_model_unavailable_total');log.info('autonomous paper skipped market=%s reason=fast_model_unavailable',market_id);continue
   request=DecisionRequest(market=market_input,strategy_id=os.getenv('AUTO_PAPER_STRATEGY','reference_class'),execute=True,evidence_complete=True)

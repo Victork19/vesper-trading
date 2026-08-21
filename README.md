@@ -121,11 +121,12 @@ and API decisions sourced from Polymarket receive `slow_market_excluded` instead
 Existing slow pending decisions remain monitored for terminal resolution but receive no new exposure. Fast-only research
 reports exclude slow-market outcomes.
 
-For short-horizon crypto markets, the autonomous loop uses `fast_market_v2`: a conservative, calibratable drift/volatility estimate from
-public one-minute spot candles. It identifies the asset and direction from the market question, projects the configured
-expiry horizon, records the model version and feature signals, and fails closed when the asset, direction, price history,
-or confidence threshold is unavailable. This is a research model that must be calibrated against resolved outcomes before
-any live consideration.
+For short-horizon crypto markets, the autonomous loop uses `fast_market_v3`: a conservative, calibratable multi-horizon
+drift/volatility estimate from public one-minute spot candles. It uses winsorized returns, EWMA short/medium/long windows,
+volatility-shock detection, mean-reversion pressure, horizon projection, uncertainty bounds and regime labels. Calibration
+targets the resolved event itself—not whether the selected trade side happened to win—and fails closed when the asset,
+direction, price history, freshness or confidence threshold is unavailable. This is a research model that must be
+validated against resolved outcomes before any live consideration.
 
 ## Current implementation boundary
 
