@@ -1,6 +1,6 @@
 # Vesper Trading
 
-Paper-first multi-strategy decision and portfolio-risk agent. It starts with a reference-class probability, measures edge and process quality, applies liquidity, capacity, correlation, and risk gates, and records every decision. Failures create scars and rules that tighten later decisions.
+Paper-first Polymarket research and portfolio-risk system. It continuously ingests Gamma market metadata and CLOB order books, evaluates liquid markets, applies reference-class probability, edge, liquidity, capacity, toxic-flow, correlation and risk gates, and records reconstructible decisions. Outcomes update calibration, CLV, expectancy, trust, scars and operating principles.
 
 ## Run locally
 
@@ -20,15 +20,13 @@ npm install
 npm run dev
 ```
 
-Optional semantic-memory setup:
-
-Sibyl is not required for persistence or paper-mode learning. Postgres is the source of truth; enable semantic memory only if you later need retrieval beyond the structured scar and principle records.
+Postgres is the source of truth. Sibyl is not required for persistence or paper-mode learning; structured scars, principles, process snapshots, decisions and the audit journal are stored in Supabase Postgres.
 
 ## Modes
 
 - `paper`: full decision path, no capital risk; default.
 - `shadow`: live signals, no execution.
-- `live`: intentionally blocked until a future operator gate and real CLOB execution adapter are enabled.
+- `live`: fails closed; authenticated CLOB submission and order reconciliation are not yet production-enabled.
 
 ## Memory map
 
@@ -46,19 +44,30 @@ docker compose -f backend/docker-compose.yml up -d --build
 curl http://localhost:8000/health
 ```
 
-The application database is Supabase Postgres. Configure `DATABASE_URL` with the Supavisor session-mode connection string; no local SQLite volume is used.
+The application database is Supabase Postgres. Configure `DATABASE_URL` with the Supavisor session-mode pooler connection string; no local SQLite volume is used.
 
-Docker starts both the API and the continuous ingestion worker. The worker persists raw market snapshots and keeps collecting until the readiness threshold is met. Check `/pipeline/status` to see current data sufficiency. Reaching the threshold may make the system eligible for the next evaluation stage, but it never enables live capital automatically.
+Docker starts both the API and the continuous pipeline worker. The worker persists raw market snapshots, automatically evaluates qualified paper markets, resolves terminal outcomes, and updates the learning layer. Check `/readiness/summary` for paper-sample progress and the exact live blockers. Reaching a data or sample threshold never enables live capital automatically.
+
+Recommended backend settings:
+
+```env
+DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
+AUTO_PAPER_ENABLED=true
+AUTO_PAPER_DECISIONS_PER_TICK=3
+AUTO_PAPER_MARKET_COOLDOWN_SECONDS=21600
+AUTO_PAPER_MAX_PER_TYPE_PER_TICK=1
+AUTO_PAPER_STRATEGY=reference_class
+```
 
 ## API
 
-`/decide`, `/markets`, `/markets/{market_id}`, `/markets/book/{token_id}`, `/signals`, `/strategies`, `/state/hot`, `/operations`, `/risk`, `/graph`, `/audit`, `/replay/{decision_id}`, `/scars`, `/principles`, `/decisions`, `/metrics`, `/outcomes`, `/mode/{paper|shadow|live}`, `/operator/request-live`, `/operator/revoke-live`, `/pipeline/status`, `/pipeline/observations`, `/ready`, `/readiness`, `/demo/clear-learning`, and `/health`.
+`/decide`, `/markets`, `/markets/{market_id}`, `/markets/input/{market_id}`, `/markets/book/{token_id}`, `/markets/quality/{market_id}`, `/signals`, `/strategies`, `/state/hot`, `/operations`, `/risk`, `/graph`, `/audit`, `/replay/{decision_id}`, `/scars`, `/principles`, `/decisions`, `/metrics`, `/outcomes`, `/mode/{paper|shadow|live}`, `/operator/request-live`, `/operator/revoke-live`, `/pipeline/status`, `/pipeline/observations`, `/ready`, `/readiness`, `/readiness/summary`, `/observability`, `/alerts`, `/metrics/prometheus`, `/demo/clear-learning`, and `/health`.
 
-Live Polymarket CLOB execution, Gamma/WebSocket ingestion, and live-capital enablement are isolated as next-stage adapters. Do not put a private key in `backend/.env` for paper mode.
+The frontend uses `/markets/input/{market_id}` before evaluation to obtain a fresh normalized market and book snapshot. Decisions retain source, quality score, quote timestamp, book sequence and snapshot hash. Do not put a private key in `backend/.env` for paper mode.
 
 `/ready` reports explicit API, memory, data-quality, freshness, and live-safety checks. Live mode additionally requires a configured `OPERATOR_APPROVAL_CODE`, a successful `/operator/request-live`, positive capital/order limits, and `LIVE_TRADING_ENABLED=true`. Revoke approval with `/operator/revoke-live`.
 
-For production operations, review [SECURITY.md](SECURITY.md), run the paper/shadow gates, and use `deploy/backup.sh` for the persistent memory volume.
+For production operations, review [SECURITY.md](SECURITY.md), run the paper/shadow gates, and use `deploy/backup.sh` for Supabase Postgres backups. The frontend overview includes an autonomous-readiness summary showing decisions, resolved outcomes, win rate, data quality, sample progress and live blockers.
 
 ## Polymarket data and go-live gates
 
@@ -79,7 +88,6 @@ and only creates paper exposure when the configured evidence produces a genuine 
 
 ## Current implementation boundary
 
-The safe core is implemented: continuous market snapshot ingestion, persistent local storage, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, replay, and a dashboard that shows the decision gates.
+The safe core is implemented: continuous Gamma/CLOB market ingestion, Supabase Postgres persistence, autonomous paper evaluation, automatic terminal resolution, exact quote/book provenance, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, calibration metrics, replay, audit events, Prometheus telemetry, and a readiness dashboard.
 
-Live Polymarket order submission is not represented as complete. It requires authenticated operator credentials, a verified signer/funder configuration, allowance checks, order lifecycle reconciliation, monitoring, and an explicit production approval. The live adapter therefore fails closed until that integration is completed and tested against a controlled account. Postgres is authoritative; Sibyl is optional and outside the critical learning path.
-# vesper-trading
+Live Polymarket order submission is not complete. It requires authenticated operator credentials, verified signer/funder configuration, allowance checks, idempotent order submission, partial-fill handling, cancellation, venue-state reconciliation, monitoring and explicit production approval. The live adapter therefore fails closed until that integration is completed and tested against a controlled account. Postgres is authoritative and Sibyl is outside the critical learning path.
