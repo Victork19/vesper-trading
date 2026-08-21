@@ -4,9 +4,6 @@ services:
     env_file:
       - path: .env
         required: false
-    volumes:
-      - trading-data:/app/data
-      - "${HOME}/.sibyl-memory:/home/vesper/.sibyl-memory:ro"
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
@@ -26,9 +23,6 @@ services:
     env_file:
       - path: .env
         required: false
-    volumes:
-      - trading-data:/app/data
-      - "${HOME}/.sibyl-memory:/home/vesper/.sibyl-memory:ro"
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
@@ -81,6 +75,5 @@ services:
       nginx:
         condition: service_healthy
 volumes:
-  trading-data:
   certbot-webroot:
   letsencrypt:

@@ -64,7 +64,7 @@ def delete_session():
  response=PlainTextResponse('',status_code=204);response.delete_cookie('vesper_session',path='/');return response
 memory=TradingMemory();edge=EdgeEngine();risk=RiskEngine(memory);portfolio=PortfolioRisk(memory);toxic=ToxicFlowDetector();bucket_killer=BucketKiller(memory);scars=ScarEngine(memory);metrics_engine=MetricsEngine(memory);markets=PolymarketData();graph=ExperienceGraph(memory);reference=ReferenceClassEngine();strategies=StrategyRegistry();secondary=SecondarySignals();ingestion_store=IngestionStore();autonomy=AutonomyGate(memory,ingestion_store)
 @app.get('/health')
-def health():telemetry.set('vesper_mode',{'paper':0,'shadow':1,'live':2}.get(memory.hot().mode.value,0));return {'status':'ok','service':'vesper-trading','mode':memory.hot().mode,'memory_load_bearing':True,'official_sibyl':bool(memory.official),'live_enabled':settings.live_enabled}
+def health():telemetry.set('vesper_mode',{'paper':0,'shadow':1,'live':2}.get(memory.hot().mode.value,0));return {'status':'ok','service':'vesper-trading','mode':memory.hot().mode,'memory_load_bearing':True,'database':'postgresql','live_enabled':settings.live_enabled}
 @app.get('/ready')
 def ready():
  q=ingestion_store.quality();h=memory.hot();approval=memory.get('HOT','live_approval') or {}
@@ -125,7 +125,7 @@ def market_quality(market_id:str,token_id:str|None=None,_=Depends(require_api_ke
 @app.post('/signals')
 def signals(payload:dict,_=Depends(require_trade)):return secondary.analyze(payload.get('question',''),payload.get('context',{}))
 @app.get('/operations')
-def operations(_=Depends(require_api_key)):return {'mode':memory.hot().mode,'live_enabled':settings.live_enabled,'max_capital':settings.max_capital,'max_order_size':settings.max_order_size,'memory':bool(memory.official),'kill_switch':memory.hot().daily_pnl<=-.1 or memory.hot().weekly_pnl<=-.2}
+def operations(_=Depends(require_api_key)):return {'mode':memory.hot().mode,'live_enabled':settings.live_enabled,'max_capital':settings.max_capital,'max_order_size':settings.max_order_size,'database':'postgresql','kill_switch':memory.hot().daily_pnl<=-.1 or memory.hot().weekly_pnl<=-.2}
 @app.get('/pipeline/status')
 def pipeline_status(_=Depends(require_api_key)):return autonomy.status()
 @app.get('/pipeline/observations')

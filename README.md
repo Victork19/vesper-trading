@@ -20,14 +20,9 @@ npm install
 npm run dev
 ```
 
-Optional Sibyl setup:
+Optional semantic-memory setup:
 
-```bash
-pip install 'sibyl-memory-cli[mcp]'
-sibyl init
-```
-
-This one-time free sign-in enables the local Sibyl client. No paid memory API key is required for paper mode.
+Sibyl is not required for persistence or paper-mode learning. Postgres is the source of truth; enable semantic memory only if you later need retrieval beyond the structured scar and principle records.
 
 ## Modes
 
@@ -51,7 +46,7 @@ docker compose -f backend/docker-compose.yml up -d --build
 curl http://localhost:8000/health
 ```
 
-The local database is stored in the `trading-data` Docker volume.
+The application database is Supabase Postgres. Configure `DATABASE_URL` with the Supavisor session-mode connection string; no local SQLite volume is used.
 
 Docker starts both the API and the continuous ingestion worker. The worker persists raw market snapshots and keeps collecting until the readiness threshold is met. Check `/pipeline/status` to see current data sufficiency. Reaching the threshold may make the system eligible for the next evaluation stage, but it never enables live capital automatically.
 
@@ -81,5 +76,5 @@ per pipeline tick (default `25`). Ambiguous, unresolved, manual, or unavailable 
 
 The safe core is implemented: continuous market snapshot ingestion, persistent local storage, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, replay, and a dashboard that shows the decision gates.
 
-Live Polymarket order submission is not represented as complete. It requires authenticated operator credentials, a verified signer/funder configuration, allowance checks, order lifecycle reconciliation, monitoring, and an explicit production approval. The live adapter therefore fails closed until that integration is completed and tested against a controlled account. Sibyl client calls are best-effort mirrored into the local SQLite schema so the paper system remains runnable if the optional client is unavailable.
+Live Polymarket order submission is not represented as complete. It requires authenticated operator credentials, a verified signer/funder configuration, allowance checks, order lifecycle reconciliation, monitoring, and an explicit production approval. The live adapter therefore fails closed until that integration is completed and tested against a controlled account. Postgres is authoritative; Sibyl is optional and outside the critical learning path.
 # vesper-trading

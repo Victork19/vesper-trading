@@ -30,4 +30,4 @@ Store the returned key in the secret manager, replace the configured client key,
 
 ## Backups
 
-Back up before migrations or recovery. The backup script stops both API and ingestion writers, copies the persistent volume, and restarts both services. Copy resulting archives off-host and test restoration regularly.
+Back up before migrations or recovery. The backup script runs `pg_dump` against the Supabase Postgres database. Copy resulting dump files off-host and test restoration regularly.

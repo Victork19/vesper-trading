@@ -6,7 +6,7 @@ This guide deploys the Vesper backend and ingestion worker on Ubuntu EC2, with N
 
 ```text
 Cloudflare Pages -> HTTPS -> EC2 Nginx -> trading API :8000
-                                      -> shared trading-data volume
+                                      -> Supabase Postgres via Supavisor
                                       -> ingestion worker
 ```
 
@@ -65,8 +65,9 @@ CORS_ORIGINS=https://YOUR-PAGES-HOST.pages.dev
 VESPER_DOMAIN=api.example.com
 CERTBOT_EMAIL=ops@example.com
 
-SIBYL_OFFICIAL=1
-SIBYL_DB_PATH=/app/data/trading.db
+DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
+DATABASE_POOL_MAX=4
+SIBYL_OFFICIAL=0
 TRADING_MODE=paper
 
 POLYMARKET_GAMMA_URL=https://gamma-api.polymarket.com

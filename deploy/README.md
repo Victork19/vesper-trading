@@ -61,8 +61,9 @@ Recommended initial values:
 
 ```dotenv
 CORS_ORIGINS=https://YOUR-PAGES-PROJECT.pages.dev
-SIBYL_OFFICIAL=1
-SIBYL_DB_PATH=/app/data/trading.db
+DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
+DATABASE_POOL_MAX=4
+SIBYL_OFFICIAL=0
 TRADING_MODE=paper
 POLYMARKET_GAMMA_URL=https://gamma-api.polymarket.com
 POLYMARKET_CLOB_URL=https://clob.polymarket.com
@@ -80,18 +81,9 @@ MAX_LIVE_ORDER_SIZE=0
 
 Never commit `backend/.env`. Do not put a private key in it for paper mode.
 
-## 4. Sibyl Memory
+## 4. Database
 
-Complete the one-time free local sign-in on the EC2 host:
-
-```bash
-python3 -m venv ~/.vesper-sibyl-venv
-~/.vesper-sibyl-venv/bin/pip install 'sibyl-memory-cli[mcp]'
-~/.vesper-sibyl-venv/bin/sibyl init
-~/.vesper-sibyl-venv/bin/sibyl status
-```
-
-Credentials should exist at `/home/ubuntu/.sibyl-memory`. Docker Compose mounts that directory read-only. No paid Sibyl API key is required for local paper operation.
+Postgres is the source of truth. Use the Supabase shared Supavisor session-mode connection string on port `5432`; the free-tier shared pooler is IPv4-compatible, so no EC2 IPv6 setup is required. Sibyl is optional and disabled by default.
 
 ## 5. Start the API and ingestion worker
 
@@ -215,7 +207,7 @@ Operational telemetry is available at `/observability`, active alerts at `/alert
 
 API credentials are scoped: the client key can read and submit paper/shadow decisions, while the admin key controls mode and operator actions. Rotate short-lived process-local credentials with `POST /operator/rotate-key` and then persist the returned value in the VPS secret manager/environment before restarting. Never ship `VITE_ADMIN_KEY` in a public frontend build; use it only for an internal operator build.
 
-The database is stored in Docker volume `trading-data`.
+The database is hosted by Supabase Postgres. Use `deploy/backup.sh` for `pg_dump` backups.
 
 ```bash
 chmod +x deploy/backup.sh

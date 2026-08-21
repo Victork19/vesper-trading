@@ -2,10 +2,10 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 python-dotenv==1.0.1
-sibyl-memory-client==0.4.19
 groq==0.15.0
 google-generativeai==0.8.3
 httpx==0.28.1
 py-clob-client-v2
 websockets==14.1
+psycopg[binary,pool]==3.2.3
 pytest==8.3.4
