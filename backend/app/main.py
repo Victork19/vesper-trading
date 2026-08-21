@@ -69,7 +69,7 @@ def health():telemetry.set('vesper_mode',{'paper':0,'shadow':1,'live':2}.get(mem
 def ready():
  q=ingestion_store.quality();h=memory.hot();approval=memory.get('HOT','live_approval') or {}
  live_checks={'auth_configured':bool(settings.api_key and settings.admin_key),'limits_configured':settings.max_capital>0 and settings.max_order_size>0,'sample_gate':len(memory.decisions())>=settings.min_sample,'data_quality':q['score']>=settings.min_data_quality and not q['stale'],'operator_approved':bool(approval.get('active')),'execution_reconciled':False}
- checks={'api':True,'memory':bool(memory.path.exists()),'data_quality':q['score']>=settings.min_data_quality or h.mode==Mode.PAPER,'data_fresh':not q['stale'] or h.mode==Mode.PAPER,'live_safe':all(live_checks) if h.mode==Mode.LIVE else True};return {'ready':all(checks.values()),'checks':checks,'live_checks':live_checks,'quality':q}
+ checks={'api':True,'memory':memory.db.ping(),'data_quality':q['score']>=settings.min_data_quality or h.mode==Mode.PAPER,'data_fresh':not q['stale'] or h.mode==Mode.PAPER,'live_safe':all(live_checks) if h.mode==Mode.LIVE else True};return {'ready':all(checks.values()),'checks':checks,'live_checks':live_checks,'quality':q}
 @app.get('/state/hot',response_model=HotState)
 def hot(_=Depends(require_api_key)):return memory.hot()
 @app.get('/constitution')

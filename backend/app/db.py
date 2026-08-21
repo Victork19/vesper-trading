@@ -26,6 +26,10 @@ class PostgresDatabase:
         with self.pool.connection() as connection: yield connection
     @staticmethod
     def json(value): return Jsonb(value)
+    def ping(self):
+        with self.connection() as connection:
+            connection.execute('SELECT 1')
+        return True
     def _ensure_schema(self):
         if PostgresDatabase._schema_ready: return
         with PostgresDatabase._pool_lock:
