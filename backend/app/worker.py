@@ -1,5 +1,5 @@
 import json,os,time,logging,signal,threading
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 from .ingestion import IngestionRunner
 from .models import DecisionRequest,Mode
 from .fast_probability import FastMarketProbability
@@ -38,7 +38,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
   # Gamma's default ordering is dominated by long-dated markets. Request
   # nearest-expiry ordering so five-minute BTC/ETH and similar markets are
   # discovered before the bounded page scan is exhausted.
-  batch=runner.data.markets(page_size,offset=page*page_size,order='endDate',ascending=True)
+  batch=runner.data.markets(page_size,offset=page*page_size,order='endDate',ascending=True,closed=False,end_date_min=now.isoformat().replace('+00:00','Z'),end_date_max=(now+timedelta(hours=max_hours)).isoformat().replace('+00:00','Z'))
   if not batch:break
   items.extend(batch)
   if len(batch)<page_size:break

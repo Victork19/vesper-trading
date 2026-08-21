@@ -24,10 +24,13 @@ class PolymarketData:
     last=exc
     if attempt+1<self.retries:time.sleep(.2*(2**attempt))
   telemetry.error('market_data_request');raise MarketDataError(f'market data request failed after {self.retries} attempts: {last}')
- def markets(self,limit=20,active=True,offset=0,order=None,ascending=None):
+ def markets(self,limit=20,active=True,offset=0,order=None,ascending=None,closed=None,end_date_min=None,end_date_max=None):
   params={'limit':max(1,min(int(limit),100)),'offset':max(0,int(offset)),'active':str(active).lower()}
   if order:params['order']=str(order)
   if ascending is not None:params['ascending']=str(bool(ascending)).lower()
+  if closed is not None:params['closed']=str(bool(closed)).lower()
+  if end_date_min is not None:params['end_date_min']=str(end_date_min)
+  if end_date_max is not None:params['end_date_max']=str(end_date_max)
   data=self._get(GAMMA+'/markets',params)
   if not isinstance(data,list):raise MarketDataError('Gamma markets response was not a list')
   return [self.validate_market(x) for x in data if isinstance(x,dict)]
