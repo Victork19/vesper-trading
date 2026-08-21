@@ -72,6 +72,11 @@ decisions against their Polymarket market IDs and settles only markets that are 
 the same path as manual `/outcomes` submissions. Configure `RESOLUTION_BATCH_SIZE` to control the maximum number checked
 per pipeline tick (default `25`). Ambiguous, unresolved, manual, or unavailable markets remain pending.
 
+With `AUTO_PAPER_ENABLED=true` (the default), the pipeline also evaluates a small rotating set of liquid markets in paper
+mode. It fetches a fresh CLOB book, avoids recently evaluated markets, records no-trade evaluations without fabricating edge,
+and only creates paper exposure when the configured evidence produces a genuine edge. Tune it with
+`AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_COOLDOWN_SECONDS`, and `AUTO_PAPER_MAX_PER_TYPE_PER_TICK`.
+
 ## Current implementation boundary
 
 The safe core is implemented: continuous market snapshot ingestion, persistent local storage, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, replay, and a dashboard that shows the decision gates.

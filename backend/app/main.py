@@ -142,6 +142,17 @@ def pipeline_status(_=Depends(require_api_key)):return autonomy.status()
 def pipeline_observations(_=Depends(require_api_key)):return ingestion_store.status()
 @app.get('/readiness')
 def readiness(_=Depends(require_api_key)):return ready()
+@app.get('/readiness/summary')
+def readiness_summary(_=Depends(require_api_key)):
+ q=ingestion_store.quality();worker=ingestion_store.worker_health();decisions=memory.decisions();resolved=[d for d in decisions if d.outcome!='pending'];pending=[d for d in decisions if d.outcome=='pending'];snapshots=memory.snapshots();resolved_count=len(resolved);wins=sum(1 for d in resolved if d.outcome=='win');pnl=sum(float(d.pnl) for d in resolved);minimum=settings.min_sample;blockers=[]
+ if resolved_count<minimum:blockers.append(f'Need {minimum-resolved_count} more resolved paper outcomes before the live sample gate can pass.')
+ if q['score']<settings.min_data_quality or q['stale']:blockers.append('Market data must remain fresh and above the configured quality threshold.')
+ if not settings.live_enabled:blockers.append('LIVE_TRADING_ENABLED is false.')
+ if settings.max_capital<=0 or settings.max_order_size<=0:blockers.append('Live capital and order limits are not configured.')
+ if not (memory.get('HOT','live_approval') or {}).get('active'):blockers.append('Explicit operator live approval has not been granted.')
+ blockers.append('Authenticated Polymarket CLOB execution and order reconciliation are not production-enabled.')
+ learning='collecting' if not decisions else 'learning' if resolved_count<minimum else 'evidence_ready'
+ return {'status':'paper_learning','learning_status':learning,'summary':f'{len(decisions)} paper decisions recorded; {resolved_count} resolved; {len(pending)} awaiting settlement.','automation':{'enabled':os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true','decisions_per_tick':max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3'))),'cooldown_seconds':max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')))},'paper':{'decisions':len(decisions),'resolved':resolved_count,'pending':len(pending),'wins':wins,'win_rate':wins/resolved_count if resolved_count else None,'pnl':pnl,'metrics_buckets':len(snapshots),'minimum_sample':minimum},'data':{'snapshots':q['snapshots'],'minimum_snapshots':int(os.getenv('MIN_MARKET_SNAPSHOTS','1000')),'quality':q['score'],'book_coverage':q.get('book_coverage',0),'stale':q['stale']},'worker':{'status':worker.get('status'),'last_resolved':worker.get('last_resolved',0),'last_pending':worker.get('last_pending',0)},'live':{'eligible':False,'blockers':blockers}}
 @app.get('/metrics/prometheus',response_class=PlainTextResponse)
 def prometheus_metrics(_=Depends(require_api_key)):return telemetry.prometheus()
 @app.get('/observability')
