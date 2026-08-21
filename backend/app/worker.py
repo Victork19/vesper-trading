@@ -35,7 +35,10 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
    except ValueError:continue
  type_counts={};evaluated=traded=skipped=0;horizon_skipped=0;candidate_count=0;page_size=max(50,min(100,int(os.getenv('AUTO_PAPER_MARKET_PAGE_SIZE','100'))));pages=max(1,min(10,int(os.getenv('AUTO_PAPER_MARKET_PAGES','5'))));items=[]
  for page in range(pages):
-  batch=runner.data.markets(page_size,offset=page*page_size)
+  # Gamma's default ordering is dominated by long-dated markets. Request
+  # nearest-expiry ordering so five-minute BTC/ETH and similar markets are
+  # discovered before the bounded page scan is exhausted.
+  batch=runner.data.markets(page_size,offset=page*page_size,order='endDate',ascending=True)
   if not batch:break
   items.extend(batch)
   if len(batch)<page_size:break
