@@ -59,6 +59,9 @@ AUTO_PAPER_DECISIONS_PER_TICK=3
 AUTO_PAPER_MARKET_COOLDOWN_SECONDS=21600
 AUTO_PAPER_MAX_PER_TYPE_PER_TICK=1
 AUTO_PAPER_STRATEGY=reference_class
+AUTO_PAPER_MIN_RESOLUTION_HOURS=0.05
+AUTO_PAPER_MAX_RESOLUTION_HOURS=24
+AUTO_PAPER_PREFER_FAST_MARKETS=true
 ```
 
 ## API
@@ -88,9 +91,12 @@ the same path as manual `/outcomes` submissions. Configure `RESOLUTION_BATCH_SIZ
 per pipeline tick (default `25`). Ambiguous, unresolved, manual, or unavailable markets remain pending.
 
 With `AUTO_PAPER_ENABLED=true` (the default), the pipeline also evaluates a small rotating set of liquid markets in paper
-mode. It fetches a fresh CLOB book, avoids recently evaluated markets, records no-trade evaluations without fabricating edge,
-and only creates paper exposure when the configured evidence produces a genuine edge. Tune it with
-`AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_COOLDOWN_SECONDS`, and `AUTO_PAPER_MAX_PER_TYPE_PER_TICK`.
+mode. It fetches a fresh CLOB book, avoids recently evaluated markets, prioritizes markets nearest to resolution, records
+no-trade evaluations without fabricating edge, and only creates paper exposure when the configured evidence produces a
+genuine edge. Tune it with `AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_COOLDOWN_SECONDS`,
+`AUTO_PAPER_MAX_PER_TYPE_PER_TICK`, `AUTO_PAPER_MIN_RESOLUTION_HOURS`, `AUTO_PAPER_MAX_RESOLUTION_HOURS`, and
+`AUTO_PAPER_PREFER_FAST_MARKETS`. Five-minute markets can increase sample throughput, but they require liquid books and
+should be evaluated with realistic latency and slippage assumptions.
 
 ## Current implementation boundary
 
