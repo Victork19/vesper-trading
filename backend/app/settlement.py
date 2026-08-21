@@ -86,7 +86,7 @@ def parse_terminal_resolution(market: dict[str, Any]) -> bool | None:
             prices = json.loads(prices)
         except json.JSONDecodeError:
             prices = []
-    explicit_winner = market.get("winner") or market.get("winningOutcome") or market.get("winning_outcome")
+    explicit_winner = market.get("winner") or market.get("winningOutcome") or market.get("winning_outcome") or market.get("finalOutcome") or market.get("final_outcome") or market.get("result")
     if explicit_winner is not None:
         label = str(explicit_winner).strip().lower()
         if label in ("yes", "true", "1"): return True

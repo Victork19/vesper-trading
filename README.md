@@ -70,6 +70,8 @@ FAST_MODEL_ENABLED=true
 FAST_MODEL_LOOKBACK_MINUTES=30
 FAST_MODEL_CACHE_SECONDS=15
 FAST_MODEL_MIN_CONFIDENCE=0.2
+FAST_MODEL_MIN_CALIBRATION_SAMPLES=20
+FAST_MODEL_FALLBACK_URL=https://api.exchange.coinbase.com/products
 ```
 
 ## API
@@ -93,7 +95,8 @@ Every negative outcome can be posted to `/outcomes`; the system updates CLV, exp
 `/research/report` produces a chronological 70/30 train/out-of-sample report once at least ten exposed outcomes exist. It reports win rate, expectancy, profit factor, drawdown, CLV, Brier score, independent buckets, and the observed post-Scar results. It is a research diagnostic, not a guarantee of future profitability.
 
 The continuous pipeline also resolves eligible paper decisions automatically. On each ingestion tick it checks pending
-decisions against their Polymarket market IDs and settles only markets that are closed/resolved with an unambiguous binary
+decisions against their Polymarket market IDs, fairly rotates through unique pending markets, settles every pending exposure
+for a terminal market, and settles only markets that are closed/resolved with an unambiguous binary
 `1/0` outcome price. Automatic settlements update PnL, trust, process metrics, scars, principles, and the audit journal in
 the same path as manual `/outcomes` submissions. Configure `RESOLUTION_BATCH_SIZE` to control the maximum number checked
 per pipeline tick (default `25`). Ambiguous, unresolved, manual, or unavailable markets remain pending.
@@ -106,7 +109,7 @@ genuine edge. Tune it with `AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_C
 `AUTO_PAPER_PREFER_FAST_MARKETS`. Five-minute markets can increase sample throughput, but they require liquid books and
 should be evaluated with realistic latency and slippage assumptions.
 
-For short-horizon crypto markets, the autonomous loop uses `fast_market_v1`: a conservative drift/volatility estimate from
+For short-horizon crypto markets, the autonomous loop uses `fast_market_v2`: a conservative, calibratable drift/volatility estimate from
 public one-minute spot candles. It identifies the asset and direction from the market question, projects the configured
 expiry horizon, records the model version and feature signals, and fails closed when the asset, direction, price history,
 or confidence threshold is unavailable. This is a research model that must be calibrated against resolved outcomes before

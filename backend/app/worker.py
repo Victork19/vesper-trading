@@ -58,11 +58,12 @@ def autonomous_paper_cycle(runner,memory,decide_fn):
   except Exception:skipped+=1;continue
   if market_input.quality_score<.95 or market_input.market_status!='active':skipped+=1;continue
   reference=_number(item.get('reference_rate') or item.get('referenceRate'))
-  model=fast_model.estimate(item,market_input) if reference is None else None
+  model=fast_model.estimate(item,market_input,memory) if reference is None else None
   if model is not None:
-   market_input.reference_rate=model['probability'];market_input.model_version=model['model_version'];market_input.signals={'fast_model':model['probability']}
+   telemetry.inc('vesper_fast_model_estimates_total',labels={'model_version':model['model_version'],'asset':model['asset']})
+   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_version=model['model_version'];market_input.signals={'fast_model':model['probability']}
   elif reference is not None:market_input.reference_rate=max(0,min(1,reference))
-  else:skipped+=1;log.info('autonomous paper skipped market=%s reason=fast_model_unavailable',market_id);continue
+  else:skipped+=1;telemetry.inc('vesper_fast_model_unavailable_total');log.info('autonomous paper skipped market=%s reason=fast_model_unavailable',market_id);continue
   request=DecisionRequest(market=market_input,strategy_id=os.getenv('AUTO_PAPER_STRATEGY','reference_class'),execute=True,evidence_complete=True)
   try:decision=decide_fn(request,None)
   except Exception as exc:skipped+=1;log.warning('autonomous paper evaluation failed market=%s error=%s',market_id,exc);continue
