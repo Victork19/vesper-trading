@@ -48,6 +48,8 @@ The application database is Supabase Postgres. Configure `DATABASE_URL` with the
 
 Docker starts both the API and the continuous pipeline worker. The worker persists raw market snapshots, automatically evaluates qualified paper markets, resolves terminal outcomes, and updates the learning layer. Check `/readiness/summary` for paper-sample progress and the exact live blockers. Reaching a data or sample threshold never enables live capital automatically.
 
+Readiness uses independent exposed outcomes, keyed by strategy, market and regime. Repeated evaluations of the same unresolved market do not count as new research evidence. A Polymarket paper evaluation without a reference rate, signal, or resolved reference-class history is recorded as a no-trade diagnostic with `reference_evidence_required`; the system never turns a missing model into a synthetic 50% probability.
+
 Recommended backend settings:
 
 ```env
@@ -61,7 +63,7 @@ AUTO_PAPER_STRATEGY=reference_class
 
 ## API
 
-`/decide`, `/markets`, `/markets/{market_id}`, `/markets/input/{market_id}`, `/markets/book/{token_id}`, `/markets/quality/{market_id}`, `/signals`, `/strategies`, `/state/hot`, `/operations`, `/risk`, `/graph`, `/audit`, `/replay/{decision_id}`, `/scars`, `/principles`, `/decisions`, `/metrics`, `/outcomes`, `/mode/{paper|shadow|live}`, `/operator/request-live`, `/operator/revoke-live`, `/pipeline/status`, `/pipeline/observations`, `/ready`, `/readiness`, `/readiness/summary`, `/observability`, `/alerts`, `/metrics/prometheus`, `/demo/clear-learning`, and `/health`.
+`/decide`, `/markets`, `/markets/{market_id}`, `/markets/input/{market_id}`, `/markets/book/{token_id}`, `/markets/quality/{market_id}`, `/signals`, `/strategies`, `/state/hot`, `/operations`, `/risk`, `/graph`, `/audit`, `/replay/{decision_id}`, `/scars`, `/principles`, `/decisions`, `/metrics`, `/outcomes`, `/research/report`, `/mode/{paper|shadow|live}`, `/operator/request-live`, `/operator/revoke-live`, `/pipeline/status`, `/pipeline/observations`, `/ready`, `/readiness`, `/readiness/summary`, `/observability`, `/alerts`, `/metrics/prometheus`, `/demo/clear-learning`, and `/health`.
 
 The frontend uses `/markets/input/{market_id}` before evaluation to obtain a fresh normalized market and book snapshot. Decisions retain source, quality score, quote timestamp, book sequence and snapshot hash. Do not put a private key in `backend/.env` for paper mode.
 
@@ -69,11 +71,15 @@ The frontend uses `/markets/input/{market_id}` before evaluation to obtain a fre
 
 For production operations, review [SECURITY.md](SECURITY.md), run the paper/shadow gates, and use `deploy/backup.sh` for Supabase Postgres backups. The frontend overview includes an autonomous-readiness summary showing decisions, resolved outcomes, win rate, data quality, sample progress and live blockers.
 
+Session-authenticated state-changing requests are origin-checked and API-key/session requests are rate-limited per principal and route. Keep `CORS_ORIGINS` restricted to the deployed frontend origin.
+
 ## Polymarket data and go-live gates
 
 `/markets` reads public Gamma market discovery and `/markets/book/{token_id}` reads public CLOB book data. Public market data does not require credentials. The official Python v2 CLOB client is an optional dependency for authenticated order workflows; Polymarket trading uses Polygon chain ID 137 and L2 API credentials for authenticated orders. Do not enable live mode until the operator has verified wallet/funder settings, limits, allowances, and a positive paper sample. `LIVE_TRADING_ENABLED` defaults to `false` and live decisions are blocked while it is false.
 
 Every negative outcome can be posted to `/outcomes`; the system updates CLV, expectancy, decision quality, and creates a scar and principle for negative process results.
+
+`/research/report` produces a chronological 70/30 train/out-of-sample report once at least ten exposed outcomes exist. It reports win rate, expectancy, profit factor, drawdown, CLV, Brier score, independent buckets, and the observed post-Scar results. It is a research diagnostic, not a guarantee of future profitability.
 
 The continuous pipeline also resolves eligible paper decisions automatically. On each ingestion tick it checks pending
 decisions against their Polymarket market IDs and settles only markets that are closed/resolved with an unambiguous binary

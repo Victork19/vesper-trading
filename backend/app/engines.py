@@ -3,11 +3,15 @@ from datetime import datetime,timedelta,timezone
 from .models import *
 class EdgeEngine:
  def estimate(self,m,calibrated_prior=None):
-  prior=calibrated_prior if calibrated_prior is not None else (m.reference_rate if m.reference_rate is not None else .5)
+  # Never manufacture a bullish/bearish edge from a neutral 0.5 prior.  When
+  # no reference evidence exists, anchoring at the observed market price makes
+  # the estimate neutral; the decision layer then applies an explicit evidence
+  # gate and records a transparent no-trade evaluation.
+  prior=calibrated_prior if calibrated_prior is not None else (m.reference_rate if m.reference_rate is not None else m.price)
   values=[max(.001,min(.999,prior))]+[max(.001,min(.999,x)) for x in m.signals.values()]
   logits=[math.log(x/(1-x)) for x in values]
   avg=sum(logits)/len(logits);fair=1/(1+math.exp(-avg))
-  unc=min(.5,(max(values)-min(values)) if len(values)>1 else .2)
+  unc=min(.5,(max(values)-min(values)) if len(values)>1 else (.2 if m.reference_rate is not None or m.signals else .5))
   conf=max(.05,min(.95,1-unc))
   # A last-trade price is not executable. Use the ask when supplied and apply
   # conservative slippage/fees to every paper estimate.

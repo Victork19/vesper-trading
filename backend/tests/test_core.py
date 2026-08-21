@@ -36,6 +36,11 @@ def test_no_side_is_a_buy_not_a_sell():
  body=c.post('/decide',json=payload).json()
  assert body['action']=='BUY' and body['side']=='NO' and body['size']>0
 
+def test_polymarket_without_reference_evidence_is_a_no_trade():
+ payload={'market':{'market_id':'unsupported-edge','question':'Unmodeled market','price':.04,'liquidity':25000,'volume_24h':100000,'source':'polymarket-clob'},'strategy_id':'reference_class','execute':True}
+ body=c.post('/decide',json=payload).json()
+ assert body['action']=='DO NOTHING' and body['size']==0 and 'reference_evidence_required' in body['gates']
+
 def test_outcome_is_idempotent_and_terminal():
  payload={'market':{'market_id':'idempotency','question':'Will event resolve yes?','price':.45,'liquidity':25000,'volume_24h':100000,'reference_rate':.60},'strategy_id':'reference_class'}
  decision=c.post('/decide',json=payload).json()

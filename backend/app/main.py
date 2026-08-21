@@ -30,10 +30,21 @@ log=logging.getLogger('vesper.api')
 @app.middleware('http')
 async def request_telemetry(request:Request,call_next):
  rid=request.headers.get('X-Request-ID') or 'req_'+uuid.uuid4().hex[:12];start=time.perf_counter();status=500
- if request.url.path not in ('/health','/ready') and request.headers.get('X-Vesper-Key'):
-  try:security.check_rate(security.authenticate(request.headers.get('X-Vesper-Key'),'read').key_id,request.url.path)
-  except HTTPException as exc:
-   if exc.status_code==429:raise
+ if request.url.path not in ('/health','/ready'):
+  principal=None
+  if request.headers.get('X-Vesper-Key'):
+   try:principal=security.authenticate(request.headers.get('X-Vesper-Key'),'read')
+   except HTTPException as exc:
+    if exc.status_code==429:raise
+  elif request.cookies.get('vesper_session'):
+   try:principal=security.authenticate_session(request.cookies.get('vesper_session'),'read')
+   except HTTPException:pass
+  if principal:
+   security.check_rate(principal.key_id,request.url.path)
+   if request.cookies.get('vesper_session') and request.method in {'POST','PUT','PATCH','DELETE'}:
+    origin=request.headers.get('origin')
+    allowed={item.strip().rstrip('/') for item in os.getenv('CORS_ORIGINS','http://localhost:5173').split(',') if item.strip()}
+    if origin and origin.rstrip('/') not in allowed:raise HTTPException(403,'Cross-origin state change blocked.')
  try:
   response=await call_next(request);status=response.status_code;return response
  except Exception:
@@ -68,7 +79,8 @@ def health():telemetry.set('vesper_mode',{'paper':0,'shadow':1,'live':2}.get(mem
 @app.get('/ready')
 def ready():
  q=ingestion_store.quality();h=memory.hot();approval=memory.get('HOT','live_approval') or {}
- live_checks={'auth_configured':bool(settings.api_key and settings.admin_key),'limits_configured':settings.max_capital>0 and settings.max_order_size>0,'sample_gate':len(memory.decisions())>=settings.min_sample,'data_quality':q['score']>=settings.min_data_quality and not q['stale'],'operator_approved':bool(approval.get('active')),'execution_reconciled':False}
+ decisions=memory.decisions();sample_keys={f'{d.strategy_id}:{d.market_id}:{d.regime}' for d in decisions if d.size>0 and d.outcome!='pending'}
+ live_checks={'auth_configured':bool(settings.api_key and settings.admin_key),'limits_configured':settings.max_capital>0 and settings.max_order_size>0,'sample_gate':len(sample_keys)>=settings.min_sample,'data_quality':q['score']>=settings.min_data_quality and not q['stale'],'operator_approved':bool(approval.get('active')),'execution_reconciled':False}
  checks={'api':True,'memory':memory.db.ping(),'data_quality':q['score']>=settings.min_data_quality or h.mode==Mode.PAPER,'data_fresh':not q['stale'] or h.mode==Mode.PAPER,'live_safe':all(live_checks) if h.mode==Mode.LIVE else True};return {'ready':all(checks.values()),'checks':checks,'live_checks':live_checks,'quality':q}
 @app.get('/state/hot',response_model=HotState)
 def hot(_=Depends(require_api_key)):return memory.hot()
@@ -144,15 +156,38 @@ def pipeline_observations(_=Depends(require_api_key)):return ingestion_store.sta
 def readiness(_=Depends(require_api_key)):return ready()
 @app.get('/readiness/summary')
 def readiness_summary(_=Depends(require_api_key)):
- q=ingestion_store.quality();worker=ingestion_store.worker_health();decisions=memory.decisions();resolved=[d for d in decisions if d.outcome!='pending'];pending=[d for d in decisions if d.outcome=='pending'];snapshots=memory.snapshots();resolved_count=len(resolved);wins=sum(1 for d in resolved if d.outcome=='win');pnl=sum(float(d.pnl) for d in resolved);minimum=settings.min_sample;blockers=[]
- if resolved_count<minimum:blockers.append(f'Need {minimum-resolved_count} more resolved paper outcomes before the live sample gate can pass.')
+ q=ingestion_store.quality();worker=ingestion_store.worker_health();decisions=memory.decisions();exposed=[d for d in decisions if d.size>0];resolved=[d for d in exposed if d.outcome!='pending'];pending=[d for d in exposed if d.outcome=='pending'];key=lambda d:f'{d.strategy_id}:{d.market_id}:{d.regime}';resolved_keys={key(d) for d in resolved};pending_keys={key(d) for d in pending};snapshots=memory.snapshots();resolved_count=len(resolved);wins=sum(1 for d in resolved if d.outcome=='win');pnl=sum(float(d.pnl) for d in resolved);minimum=settings.min_sample;blockers=[]
+ if len(resolved_keys)<minimum:blockers.append(f'Need {minimum-len(resolved_keys)} more independent resolved paper outcomes before the live sample gate can pass.')
  if q['score']<settings.min_data_quality or q['stale']:blockers.append('Market data must remain fresh and above the configured quality threshold.')
  if not settings.live_enabled:blockers.append('LIVE_TRADING_ENABLED is false.')
  if settings.max_capital<=0 or settings.max_order_size<=0:blockers.append('Live capital and order limits are not configured.')
  if not (memory.get('HOT','live_approval') or {}).get('active'):blockers.append('Explicit operator live approval has not been granted.')
  blockers.append('Authenticated Polymarket CLOB execution and order reconciliation are not production-enabled.')
- learning='collecting' if not decisions else 'learning' if resolved_count<minimum else 'evidence_ready'
- return {'status':'paper_learning','learning_status':learning,'summary':f'{len(decisions)} paper decisions recorded; {resolved_count} resolved; {len(pending)} awaiting settlement.','automation':{'enabled':os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true','decisions_per_tick':max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3'))),'cooldown_seconds':max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')))},'paper':{'decisions':len(decisions),'resolved':resolved_count,'pending':len(pending),'wins':wins,'win_rate':wins/resolved_count if resolved_count else None,'pnl':pnl,'metrics_buckets':len(snapshots),'minimum_sample':minimum},'data':{'snapshots':q['snapshots'],'minimum_snapshots':int(os.getenv('MIN_MARKET_SNAPSHOTS','1000')),'quality':q['score'],'book_coverage':q.get('book_coverage',0),'stale':q['stale']},'worker':{'status':worker.get('status'),'last_resolved':worker.get('last_resolved',0),'last_pending':worker.get('last_pending',0)},'live':{'eligible':False,'blockers':blockers}}
+ learning='collecting' if not exposed else 'learning' if len(resolved_keys)<minimum else 'evidence_ready'
+ return {'status':'paper_learning','learning_status':learning,'summary':f'{len(exposed)} exposed paper decisions across {len({key(d) for d in exposed})} independent market-strategy buckets; {len(resolved_keys)} resolved; {len(pending_keys)} awaiting settlement.','automation':{'enabled':os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true','decisions_per_tick':max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3'))),'cooldown_seconds':max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')))},'paper':{'decisions':len(decisions),'exposed':len(exposed),'independent_buckets':len({key(d) for d in exposed}),'resolved':resolved_count,'independent_resolved':len(resolved_keys),'pending':len(pending),'independent_pending':len(pending_keys),'wins':wins,'win_rate':wins/resolved_count if resolved_count else None,'pnl':pnl,'metrics_buckets':len(snapshots),'minimum_sample':minimum},'research':research_report(decisions),'data':{'snapshots':q['snapshots'],'minimum_snapshots':int(os.getenv('MIN_MARKET_SNAPSHOTS','1000')),'quality':q['score'],'book_coverage':q.get('book_coverage',0),'stale':q['stale']},'worker':{'status':worker.get('status'),'last_resolved':worker.get('last_resolved',0),'last_pending':worker.get('last_pending',0)},'live':{'eligible':False,'blockers':blockers}}
+
+def _research_slice(items):
+ if not items:return {'count':0,'wins':0,'win_rate':None,'pnl':0.0,'expectancy':None,'profit_factor':None,'max_drawdown':0.0,'avg_clv':None,'brier':None}
+ wins=sum(1 for d in items if d.outcome=='win');pnl=sum(float(d.pnl) for d in items);profits=sum(max(0,float(d.pnl)) for d in items);losses=sum(min(0,float(d.pnl)) for d in items);equity=peak=drawdown=0.0
+ for d in items:
+  equity+=float(d.pnl);peak=max(peak,equity);drawdown=max(drawdown,peak-equity)
+ scored=[d for d in items if d.resolved_yes is not None];brier=sum((d.fair_probability-(1.0 if d.resolved_yes else 0.0))**2 for d in scored)/len(scored) if scored else None
+ clvs=[float(d.clv) for d in items if d.clv is not None]
+ return {'count':len(items),'wins':wins,'win_rate':wins/len(items),'pnl':pnl,'expectancy':pnl/len(items),'profit_factor':profits/abs(losses) if losses else None,'max_drawdown':drawdown,'avg_clv':sum(clvs)/len(clvs) if clvs else None,'brier':brier}
+
+def research_report(decisions):
+ resolved=sorted([d for d in decisions if d.size>0 and d.outcome not in ('pending','void')],key=lambda d:d.created_at)
+ split=max(0,int(len(resolved)*.7));train=resolved[:split];test=resolved[split:]
+ scars=memory.scars();post=[]
+ for scar in scars:
+  try:created=datetime.fromisoformat(scar.created_at.replace('Z','+00:00'))
+  except ValueError:continue
+  bucket=[d for d in resolved if d.strategy_id==scar.strategy_id and d.market_type==scar.market_type and d.regime==scar.regime and datetime.fromisoformat(d.created_at.replace('Z','+00:00'))>created]
+  if bucket:post.append({'scar_id':scar.id,'status':scar.status,'outcomes':len(bucket),'pnl':sum(float(d.pnl) for d in bucket),'win_rate':sum(1 for d in bucket if d.outcome=='win')/len(bucket)})
+ return {'status':'insufficient_data' if len(resolved)<10 else 'available','resolved_exposures':len(resolved),'independent_buckets':len({f'{d.strategy_id}:{d.market_id}:{d.regime}' for d in resolved}),'minimum_for_oos':10,'train':_research_slice(train),'out_of_sample':_research_slice(test),'scar_effectiveness':post}
+
+@app.get('/research/report')
+def research(_=Depends(require_api_key)):return research_report(memory.decisions())
 @app.get('/metrics/prometheus',response_class=PlainTextResponse)
 def prometheus_metrics(_=Depends(require_api_key)):return telemetry.prometheus()
 @app.get('/observability')
@@ -194,7 +229,8 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
  h=memory.hot();strategy=strategies.get(req.strategy_id)
  if not strategy:raise HTTPException(422,f'Unknown strategy: {req.strategy_id}')
  history=[1 if d.resolved_yes else 0 for d in memory.decisions() if d.market_type==req.market.market_type and d.resolved_yes is not None]
- calibrated=reference.calibrated_prior(req.market.market_type,req.market.reference_rate if req.market.reference_rate is not None else .5,history)
+ has_reference_evidence=req.market.reference_rate is not None or bool(req.market.signals) or bool(history)
+ calibrated=reference.calibrated_prior(req.market.market_type,req.market.reference_rate if req.market.reference_rate is not None else req.market.price,history)
  e=edge.estimate(req.market,calibrated);trust=memory.effective_trust(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
  size,gates=risk.size(e,req.market,trust,strategy,settings.max_portfolio_heat);size*=memory.scar_size_multiplier(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
  quality_gates=[]
@@ -202,6 +238,7 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
  if quote_time is not None and (datetime.now(timezone.utc)-quote_time).total_seconds()>120:quality_gates.append('stale_market_input')
  if req.market.quality_score<.95:quality_gates.append('market_quality_below_threshold')
  if req.market.market_status!='active':quality_gates.append('market_not_active')
+ if not has_reference_evidence and req.market.source.startswith('polymarket'):quality_gates.append('reference_evidence_required')
  if h.mode in (Mode.SHADOW,Mode.LIVE) and req.market.source=='manual':quality_gates.append('untrusted_market_source')
  if h.mode in (Mode.SHADOW,Mode.LIVE) and (req.market.yes_ask is None or req.market.no_ask is None):quality_gates.append('executable_quote_required')
  if quality_gates:size=0;gates+=quality_gates

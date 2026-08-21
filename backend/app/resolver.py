@@ -24,10 +24,13 @@ class OutcomeResolver:
         telemetry.set("vesper_resolution_enabled", 1)
         checked = settled = unresolved = errors = 0
         pending = [decision for decision in self.memory.decisions() if decision.outcome == "pending" and decision.size > 0 and not decision.market_id.startswith("manual-")]
+        market_cache = {}
         for decision in pending[:self.batch_size]:
             checked += 1
             try:
-                market = self.data.market(decision.market_id)
+                if decision.market_id not in market_cache:
+                    market_cache[decision.market_id] = self.data.market(decision.market_id)
+                market = market_cache[decision.market_id]
                 resolved_yes = parse_terminal_resolution(market)
                 if resolved_yes is None:
                     unresolved += 1
