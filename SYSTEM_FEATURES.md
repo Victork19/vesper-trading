@@ -12,7 +12,7 @@ Every decision is reconstructible. Every outcome is recorded. Negative process r
 
 ## Overall grade
 
-### System-wide grade: **8.1 / 10**
+### System-wide grade: **8.5 / 10**
 
 Vesper is a strong paper/shadow trading platform and a credible foundation for controlled deployment. The overall score is reduced by unfinished real-money execution, distributed security state, and incomplete automated testing—not by the core decision architecture.
 
@@ -22,11 +22,11 @@ Vesper is a strong paper/shadow trading platform and a credible foundation for c
 | Risk sizing and portfolio controls | 8.5/10 |
 | Settlement and outcome integrity | 8.5/10 |
 | Market-data quality | 9.4/10 |
-| Persistence and reliability | 8.0/10 |
-| Order lifecycle architecture | 8.0/10 |
+| Persistence and reliability | 8.7/10 |
+| Order lifecycle architecture | 8.4/10 |
 | Security and API controls | 8.8/10 |
 | Frontend completeness | 9.0/10 |
-| Deployment and operations | 9.0/10 |
+| Deployment and operations | 9.2/10 |
 | Observability and monitoring | 8.8/10 |
 | Testing and verification | 7.0/10 |
 | Live trading readiness | 4.0/10 |
@@ -139,11 +139,11 @@ Paper execution records simulated fills. Shadow execution records accepted signa
 
 ## Persistence and reliability
 
-- SQLite WAL mode.
-- `FULL` synchronous durability.
-- Busy timeouts.
-- Foreign-key enforcement.
-- Thread-safe write locks.
+- Supabase/Postgres as the authoritative persistence layer.
+- Connection pooling with bounded pool size.
+- Transactional writes and database-backed advisory settlement locks.
+- Durable journal events and JSONB-backed memory tiers.
+- Thread-safe process locks around shared in-process state.
 - Durable journal events.
 - Durable orders table.
 - Durable market snapshots.
@@ -337,8 +337,7 @@ Vesper is ready for serious paper and shadow operation. It is not yet approved f
 - Balance reconciliation.
 - Exchange outage handling.
 - Independent emergency kill switch.
-- Distributed credential and rate-limit state.
 - External Prometheus/Alertmanager deployment.
-- Full pytest execution in CI.
+- Full Postgres-backed suite and deployed runtime verification on EC2.
 
 The system is deliberately safer because these limitations are explicit, observable, and fail closed.

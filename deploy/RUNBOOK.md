@@ -9,6 +9,16 @@ curl -H "X-Vesper-Key: $VESPER_API_KEY" "$VESPER_API_URL/observability"
 curl -H "X-Vesper-Key: $VESPER_API_KEY" "$VESPER_API_URL/alerts"
 ```
 
+## Backend verification
+
+Run the full backend suite only against a disposable Postgres database. Never point tests at the production Supabase URL. If `VESPER_TEST_DATABASE_URL` is omitted, the script creates and removes a disposable Postgres 16 container automatically:
+
+```bash
+bash deploy/test-backend.sh
+```
+
+The test runner refuses Supabase URLs, waits for the disposable database to accept connections, and builds a separate image containing the test suite. Production containers do not include test files.
+
 ## Incident response
 
 1. If `MARKET_DATA_STALE` or `INGESTION_WORKER_STALE` is active, keep the system in paper/shadow and inspect the pipeline logs.

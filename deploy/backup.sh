@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 mkdir -p backups
 if [ -f backend/.env ]; then
   set -a

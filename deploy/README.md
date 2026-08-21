@@ -61,6 +61,8 @@ Recommended initial values:
 
 ```dotenv
 CORS_ORIGINS=https://YOUR-PAGES-PROJECT.pages.dev
+VESPER_ENV=production
+VESPER_COOKIE_SECURE=true
 DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
 DATABASE_POOL_MAX=4
 SIBYL_OFFICIAL=0
@@ -75,6 +77,8 @@ LIVE_TRADING_ENABLED=false
 VESPER_AUTH_REQUIRED=true
 VESPER_API_KEY=use-a-long-random-client-key
 VESPER_ADMIN_KEY=use-a-separate-long-random-admin-key
+VESPER_SESSION_SECRET=use-a-separate-long-random-session-secret
+OPERATOR_APPROVAL_CODE=use-a-separate-long-random-approval-secret
 MAX_LIVE_CAPITAL=0
 MAX_LIVE_ORDER_SIZE=0
 ```
@@ -205,7 +209,7 @@ Open the Pages URL and confirm browser requests use `https://vesper-scar.duckdns
 
 Operational telemetry is available at `/observability`, active alerts at `/alerts`, and Prometheus-compatible metrics at `/metrics/prometheus`. Scrapers must send `X-Vesper-Key`; keep this endpoint behind an internal network policy.
 
-API credentials are scoped: the client key can read and submit paper/shadow decisions, while the admin key controls mode and operator actions. Rotate short-lived process-local credentials with `POST /operator/rotate-key` and then persist the returned value in the VPS secret manager/environment before restarting. Never ship `VITE_ADMIN_KEY` in a public frontend build; use it only for an internal operator build.
+API credentials are scoped: the client key can read and submit paper/shadow decisions, while the admin key controls mode and operator actions. Rotate credentials with `POST /operator/rotate-key`; the key identity is persisted in Postgres, while the returned secret must be stored in the secret manager/environment because it cannot be recovered later. Never ship `VITE_ADMIN_KEY` in a public frontend build; use it only for an internal operator build.
 
 The database is hosted by Supabase Postgres. Use `deploy/backup.sh` for `pg_dump` backups.
 

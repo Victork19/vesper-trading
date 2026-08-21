@@ -1,7 +1,8 @@
-name: Vesper CI
+name: Vesper verification
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 jobs:
@@ -18,9 +19,9 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U vesper -d vesper_test"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 20
     defaults:
       run:
         working-directory: backend
@@ -31,14 +32,16 @@ jobs:
           python-version: '3.11'
           cache: pip
           cache-dependency-path: backend/requirements.txt
+      - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt
-      - run: python -c "import os; print('database configured:', bool(os.environ.get('DATABASE_URL')))"
-        env:
-          DATABASE_URL: postgresql://vesper:vesper@localhost:5432/vesper_test
       - run: python -m compileall -q app tests
       - run: pytest -q
         env:
           DATABASE_URL: postgresql://vesper:vesper@localhost:5432/vesper_test
+          VESPER_AUTH_REQUIRED: 'true'
+          VESPER_API_KEY: client-test-key
+          VESPER_ADMIN_KEY: admin-test-key
+      - run: docker build -f Dockerfile.test -t vesper-backend-tests:ci .
 
   frontend:
     runs-on: ubuntu-latest

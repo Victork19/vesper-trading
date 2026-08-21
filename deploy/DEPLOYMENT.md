@@ -62,6 +62,8 @@ Recommended paper/shadow values:
 
 ```dotenv
 CORS_ORIGINS=https://YOUR-PAGES-HOST.pages.dev
+VESPER_ENV=production
+VESPER_COOKIE_SECURE=true
 VESPER_DOMAIN=api.example.com
 CERTBOT_EMAIL=ops@example.com
 
@@ -83,6 +85,8 @@ INGEST_REQUIRE_BOOKS=true
 VESPER_AUTH_REQUIRED=true
 VESPER_API_KEY=long-random-client-key
 VESPER_ADMIN_KEY=long-random-admin-key
+VESPER_SESSION_SECRET=long-random-session-secret
+OPERATOR_APPROVAL_CODE=long-random-operator-approval-secret
 VESPER_RATE_LIMIT_PER_MINUTE=120
 
 LIVE_TRADING_ENABLED=false
@@ -212,10 +216,10 @@ Keep the system in paper mode while any critical alert is active.
 
 ```bash
 ./deploy/backup.sh
-scp backups/trading-memory-*.tgz backup-host:/secure/vesper/
+scp backups/trading-postgres-*.dump backup-host:/secure/vesper/
 ```
 
-The script stops both API writers before copying the persistent volume. Test restoration on a separate host regularly; an untested archive is not a verified backup.
+The script creates a restricted PostgreSQL custom-format dump. Copy it off-host and test restoration on a separate database regularly; an untested archive is not a verified backup.
 
 ## 11. Upgrade and rollback
 

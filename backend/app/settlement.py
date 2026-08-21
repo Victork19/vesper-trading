@@ -31,15 +31,18 @@ def settle_decision(
     decision.pnl = pnl
     decision.clv = clv
     decision.resolved_yes = resolved_yes
-    memory.put("COLD", decision.id, decision.model_dump())
+    decision.resolved_at = now_iso()
 
-    hot = memory.hot()
-    hot.daily_pnl += pnl
-    hot.weekly_pnl += pnl
-    hot.portfolio_heat = max(0, hot.portfolio_heat - decision.size * decision.paper_fill_fraction)
-    trust = hot.trust.get(decision.strategy_id, 0.5)
-    hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
-    memory.save_hot(hot)
+    with memory.portfolio_lock() as portfolio_connection:
+        hot = memory.hot()
+        hot.daily_pnl += pnl
+        hot.weekly_pnl += pnl
+        effective_exposure=decision.size*decision.paper_fill_fraction
+        hot.portfolio_heat = max(0, hot.portfolio_heat - effective_exposure)
+        hot.open_risk = max(0, hot.open_risk - effective_exposure)
+        trust = hot.trust.get(decision.strategy_id, 0.5)
+        hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
+        memory.save_settlement_state(decision,hot,portfolio_connection)
 
     measured_process_score=max(0.0,min(1.0,process_score if process_score is not None else (1.0 if pnl>0 and evidence_complete else .5 if evidence_complete else .25)))
     snapshot = metrics.outcome(decision, pnl, clv, measured_process_score, resolved_yes)
@@ -118,6 +121,6 @@ def contract_pnl(decision: DecisionRecord, resolved_yes: bool) -> tuple[str, flo
     if decision.size <= 0 or decision.side not in ("YES", "NO"):
         return None
     won = resolved_yes == (decision.side == "YES")
-    price = decision.executable_price if decision.executable_price is not None else decision.price
+    price = decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
     size=decision.size*decision.paper_fill_fraction
     return ("win" if won else "loss", size * (1 - price) if won else -size * price)

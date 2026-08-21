@@ -2,22 +2,39 @@ from abc import ABC, abstractmethod
 from .models import DecisionRecord, Mode, OrderStatus
 import uuid
 from .config import settings
-def paper_fill_profile(market,size):
- # Deterministic, replayable microstructure model. It never invents a fill
- # when the observed book cannot support the requested exposure.
- if size<=0:return 0.0,'zero_size'
- depth=sum(level.size for level in (market.book_asks or []))
- if not depth:return 1.0,'no_depth_reported_conservative_full_fill'
- fraction=max(0.0,min(1.0,depth/size))
- if market.quality_score<.95:fraction*=max(0.25,market.quality_score)
- return fraction,'top_of_book_depth_and_quality'
+def paper_execution_profile(market,size,side=None):
+ # Deterministic, replayable microstructure model. Walk asks in price order,
+ # compute the volume-weighted quote actually consumed, then apply configured
+ # slippage and binary-contract fees. Missing depth fails closed.
+ if size<=0:return {'fill_fraction':0.0,'filled_size':0.0,'average_quote_price':None,'execution_price':None,'reason':'zero_size'}
+ if side=='YES':asks=getattr(market,'yes_book_asks',None) or []
+ elif side=='NO':asks=getattr(market,'no_book_asks',None) or []
+ else:asks=getattr(market,'book_asks',None) or []
+ levels=sorted((level for level in (asks or []) if level.size>0),key=lambda level:level.price)
+ if not levels:return {'fill_fraction':0.0,'filled_size':0.0,'average_quote_price':None,'execution_price':None,'reason':'no_depth_reported_no_fill'}
+ remaining=float(size);filled=notional=0.0
+ for level in levels:
+  take=min(remaining,float(level.size));filled+=take;notional+=take*float(level.price);remaining-=take
+  if remaining<=1e-12:break
+ if filled<=0:return {'fill_fraction':0.0,'filled_size':0.0,'average_quote_price':None,'execution_price':None,'reason':'no_fillable_depth'}
+ average=notional/filled
+ quality_multiplier=max(.25,float(getattr(market,'quality_score',1.0))) if market.quality_score<.95 else 1.0
+ filled*=quality_multiplier
+ execution=min(1.0,average+float(getattr(market,'slippage_bps',0))/10000+float(getattr(market,'fee_rate',0))*(1-average))
+ return {'fill_fraction':max(0.0,min(1.0,filled/size)),'filled_size':filled,'average_quote_price':average,'execution_price':execution,'reason':'depth_walk_vwap_quality_adjusted' if quality_multiplier<1 else 'depth_walk_vwap'}
+
+def paper_fill_profile(market,size,side=None):
+ profile=paper_execution_profile(market,size,side)
+ return profile['fill_fraction'],profile['reason']
 class ExecutionAdapter(ABC):
  @abstractmethod
  def execute(self,decision:DecisionRecord)->dict:...
 class PaperExecution(ExecutionAdapter):
  def execute(self,decision):
   filled=decision.size*decision.paper_fill_fraction
-  return {'status':OrderStatus.FILLED.value if filled>0 else OrderStatus.REJECTED.value,'capital_at_risk':0,'decision_id':decision.id,'client_order_id':'paper_'+uuid.uuid4().hex,'filled_size':filled,'average_fill_price':decision.executable_price or decision.price}
+  status=OrderStatus.REJECTED if filled<=0 else OrderStatus.PARTIALLY_FILLED if filled+1e-12<decision.size else OrderStatus.FILLED
+  execution_price=decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
+  return {'status':status.value,'capital_at_risk':0,'decision_id':decision.id,'client_order_id':'paper_'+uuid.uuid4().hex,'filled_size':filled,'average_fill_price':execution_price}
 class ShadowExecution(ExecutionAdapter):
  def execute(self,decision):return {'status':OrderStatus.ACCEPTED.value,'capital_at_risk':0,'decision_id':decision.id,'client_order_id':'shadow_'+uuid.uuid4().hex,'filled_size':0,'average_fill_price':None}
 class LiveExecution(ExecutionAdapter):

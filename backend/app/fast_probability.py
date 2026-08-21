@@ -71,6 +71,7 @@ def estimate_from_closes(closes,horizon_minutes,direction='up',target_price=None
 
 class FastMarketProbability:
  def __init__(self): self.enabled=os.getenv('FAST_MODEL_ENABLED','true').lower()=='true';self.client=httpx.Client(timeout=httpx.Timeout(5.0,connect=2.0),headers={'User-Agent':'vesper-fast-model/1.0'});self.cache={};self.cache_seconds=max(5,int(os.getenv('FAST_MODEL_CACHE_SECONDS','15')))
+ def close(self):self.client.close()
  def _history(self,symbol):
   now=datetime.now(timezone.utc).timestamp();cached=self.cache.get(symbol)
   if cached and now-cached[0]<self.cache_seconds:return cached[1]
@@ -81,17 +82,24 @@ class FastMarketProbability:
     if len(closes)>=20 and _fresh_candles(raw):self.cache[symbol]=(now,closes,source);return closes
    except (httpx.HTTPError,ValueError) as exc:last=exc
   raise RuntimeError(f'fast market data unavailable: {last}')
- def _calibration_samples(self,memory,model_version):
+ def _calibration_samples(self,memory,model_version,as_of=None):
   samples=[]
   if memory is None:return samples
+  cutoff=as_of or datetime.now(timezone.utc)
   try:
    for decision in memory.decisions():
     if decision.model_version not in (model_version,MODEL_VERSION) or decision.outcome in ('pending','void') or decision.resolved_yes is None:continue
+    try:
+     created=datetime.fromisoformat(str(decision.created_at).replace('Z','+00:00'))
+     resolved_at=datetime.fromisoformat(str(decision.resolved_at).replace('Z','+00:00')) if decision.resolved_at else None
+     if resolved_at is None or created>=resolved_at or created>=cutoff or resolved_at>cutoff:continue
+    except (TypeError,ValueError):
+     continue
     predicted=float(decision.raw_model_probability if decision.raw_model_probability is not None else decision.fair_probability);samples.append((max(.001,min(.999,predicted)),1.0 if decision.resolved_yes else 0.0))
   except Exception:return []
   return samples
- def _calibrate(self,memory,raw_probability,model_version):
-  samples=self._calibration_samples(memory,model_version);minimum=int(os.getenv('FAST_MODEL_MIN_CALIBRATION_SAMPLES','20'))
+ def _calibrate(self,memory,raw_probability,model_version,as_of=None):
+  samples=self._calibration_samples(memory,model_version,as_of);minimum=int(os.getenv('FAST_MODEL_MIN_CALIBRATION_SAMPLES','20'))
   if len(samples)<minimum:return raw_probability
   nearby=[actual for predicted,actual in samples if abs(predicted-raw_probability)<=.12];nearby=nearby if len(nearby)>=5 else [actual for _,actual in samples];empirical=(sum(nearby)+5)/(len(nearby)+10);weight=min(.55,len(nearby)/(len(nearby)+60));return _clamp(raw_probability*(1-weight)+empirical*weight)
  def estimate(self,item,market_input,memory=None):
@@ -102,5 +110,5 @@ class FastMarketProbability:
   except (httpx.HTTPError,ValueError,RuntimeError):return None
   target=_number(item,'priceToBeat','price_to_beat','startPrice','start_price','strikePrice','strike_price','initialPrice','initial_price');estimate=estimate_from_closes(closes,market_input.resolution_hours*60,direction,target)
   if estimate is None or estimate['confidence']<float(os.getenv('FAST_MODEL_MIN_CONFIDENCE','.2')):return None
-  raw=estimate['probability'];samples=self._calibration_samples(memory,estimate['model_version']);calibrated=self._calibrate(memory,raw,estimate['model_version']);estimate['raw_probability']=raw;estimate['probability']=calibrated;estimate['calibration_samples']=len(samples);estimate['calibration_status']='usable' if len(samples)>=int(os.getenv('FAST_MODEL_MIN_CALIBRATION_SAMPLES','20')) else 'warming';estimate['lower_bound']=_clamp(estimate['lower_bound']-(calibrated-raw),.01,.99);estimate['upper_bound']=_clamp(estimate['upper_bound']+(calibrated-raw),.01,.99)
+  raw=estimate['probability'];as_of=datetime.now(timezone.utc);samples=self._calibration_samples(memory,estimate['model_version'],as_of);calibrated=self._calibrate(memory,raw,estimate['model_version'],as_of);estimate['raw_probability']=raw;estimate['probability']=calibrated;estimate['calibration_samples']=len(samples);estimate['calibration_status']='usable' if len(samples)>=int(os.getenv('FAST_MODEL_MIN_CALIBRATION_SAMPLES','20')) else 'warming';estimate['lower_bound']=_clamp(estimate['lower_bound']-(calibrated-raw),.01,.99);estimate['upper_bound']=_clamp(estimate['upper_bound']+(calibrated-raw),.01,.99)
   return estimate|{'asset':symbol,'direction':direction}

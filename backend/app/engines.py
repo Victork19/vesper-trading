@@ -53,10 +53,11 @@ class ScarEngine:
   context={
    'market_id':d.market_id,'market_type':d.market_type,'regime':d.regime,
    'model_version':d.model_version,'fair_probability':d.fair_probability,
-   'raw_model_probability':d.raw_model_probability,'price':d.price,
+   'raw_model_probability':d.raw_model_probability,'model_probability':d.model_probability,'price':d.price,
    'executable_price':d.executable_price,'edge':d.edge,'confidence':d.confidence,
    'quality_score':d.quality_score,'fill_model_version':d.fill_model_version,
    'paper_fill_fraction':d.paper_fill_fraction,'paper_cost':d.paper_cost,
+   'paper_execution_price':d.paper_execution_price,
    'gates':d.gates,
   }
   # Repeated failures in the same bucket update one memory rather than

@@ -10,17 +10,17 @@ class Impact(BaseModel): trust_delta:float=-.2; max_size_multiplier:float=.5; co
 class Scar(BaseModel):
  id:str; strategy_id:str='unknown'; market_id:str='unknown'; market_type:str='unknown'; regime:str='unknown'; type:str; failure_type:str='negative_process'; severity:int=Field(ge=1,le=10); pnl:float=0; clv:float=0; process_score:float=Field(default=0,ge=0,le=1); lesson:str; principle:str; impact:Impact=Field(default_factory=Impact); affected_buckets:list[str]=Field(default_factory=list); context:dict[str,Any]=Field(default_factory=dict); counterfactual:str='Would this decision have remained positive after fees, slippage, and a conservative fill?' ; evidence_count:int=1; recovery_score:float=0; last_evaluated_at:str|None=None; cooldown_until:str|None=None; rehabilitation_condition:str='Require three qualifying positive resolved outcomes with non-negative CLV and no constitutional rule violations.'; rehabilitation_required:int=3; rehabilitation_progress:int=0; linked_scars:list[str]=Field(default_factory=list); status:str='active'; created_at:str=Field(default_factory=now_iso); resolved_at:str|None=None; onchain_anchor:str|None=None
 class Principle(BaseModel): id:str; statement:str; source_scars:list[str]=Field(default_factory=list); strength:int=Field(default=1,ge=1,le=10); strategy_id:str='global'; regime:str='global'; status:str='active'; created_at:str=Field(default_factory=now_iso)
-class ProcessSnapshot(BaseModel): strategy_id:str; market_type:str; regime:str; decisions:int=0; wins:int=0; pnl:float=0; clv_sum:float=0; expectancy:float=0; rule_adherence:float=1; decision_quality:float=.5; profit_factor:float=0; gross_profit:float=0; gross_loss:float=0; brier_score:float|None=None; log_loss:float|None=None; calibration_error:float|None=None; updated_at:str=Field(default_factory=now_iso)
+class ProcessSnapshot(BaseModel): strategy_id:str; market_type:str; regime:str; model_version:str|None=None; decisions:int=0; wins:int=0; pnl:float=0; clv_sum:float=0; expectancy:float=0; rule_adherence:float=1; decision_quality:float=.5; profit_factor:float=0; gross_profit:float=0; gross_loss:float=0; brier_score:float|None=None; log_loss:float|None=None; calibration_error:float|None=None; updated_at:str=Field(default_factory=now_iso)
 class BookLevel(BaseModel): price:float=Field(ge=0,le=1); size:float=Field(ge=0)
 class HotState(BaseModel): mode:Mode=Mode.PAPER; trust:dict[str,float]=Field(default_factory=dict); active_constraints:list[str]=Field(default_factory=list); open_risk:float=0; portfolio_heat:float=0; correlation_regime:str='baseline'; capacity_utilization:float=0; daily_pnl:float=0; weekly_pnl:float=0; last_context:str=''
 class MarketInput(BaseModel):
  market_id:str; question:str; market_type:str='unknown'; price:float=Field(ge=0,le=1)
  volume_24h:float=Field(default=0,ge=0); liquidity:float=Field(default=0,ge=0); resolution_hours:float=Field(default=168,gt=0)
- regime:str='baseline'; reference_rate:float|None=Field(default=None,ge=0,le=1); signals:dict[str,float]=Field(default_factory=dict); model_lower_bound:float|None=Field(default=None,ge=0,le=1); model_upper_bound:float|None=Field(default=None,ge=0,le=1); model_uncertainty:float|None=Field(default=None,ge=0,le=1)
+ regime:str='baseline'; reference_rate:float|None=Field(default=None,ge=0,le=1); signals:dict[str,float]=Field(default_factory=dict); model_probability:float|None=Field(default=None,ge=0,le=1); model_lower_bound:float|None=Field(default=None,ge=0,le=1); model_upper_bound:float|None=Field(default=None,ge=0,le=1); model_uncertainty:float|None=Field(default=None,ge=0,le=1); model_calibration_samples:int=Field(default=0,ge=0); model_calibration_status:str='unavailable'
  source:str='manual'; model_version:str|None=None; raw_model_probability:float|None=None; observed_at:datetime|None=None; quote_observed_at:datetime|None=None; quality_score:float=Field(default=1,ge=0,le=1); snapshot_hash:str|None=None; market_status:str='active'; market_end_time:datetime|None=None; book_bids:list[BookLevel]=Field(default_factory=list); book_asks:list[BookLevel]=Field(default_factory=list); book_sequence:int|None=None
- yes_token_id:str|None=None; no_token_id:str|None=None
- yes_bid:float|None=Field(default=None,ge=0,le=1); yes_ask:float|None=Field(default=None,ge=0,le=1)
- no_bid:float|None=Field(default=None,ge=0,le=1); no_ask:float|None=Field(default=None,ge=0,le=1)
+ yes_token_id:str|None=None; no_token_id:str|None=None; yes_book_bids:list[BookLevel]=Field(default_factory=list); yes_book_asks:list[BookLevel]=Field(default_factory=list); no_book_bids:list[BookLevel]=Field(default_factory=list); no_book_asks:list[BookLevel]=Field(default_factory=list)
+ yes_bid:float|None=Field(default=None,ge=0,le=1); yes_ask:float|None=Field(default=None,ge=0,le=1); yes_quote_observed_at:datetime|None=None
+ no_bid:float|None=Field(default=None,ge=0,le=1); no_ask:float|None=Field(default=None,ge=0,le=1); no_quote_observed_at:datetime|None=None; quote_skew_seconds:float=Field(default=0,ge=0)
  fee_rate:float=Field(default=0,ge=0,le=.5); slippage_bps:float=Field(default=0,ge=0,le=10000)
 
  @field_validator('signals')
@@ -33,6 +33,8 @@ class MarketInput(BaseModel):
  def valid_quotes(self):
   if self.yes_bid is not None and self.yes_ask is not None and self.yes_bid>self.yes_ask:raise ValueError('yes_bid cannot exceed yes_ask')
   if self.no_bid is not None and self.no_ask is not None and self.no_bid>self.no_ask:raise ValueError('no_bid cannot exceed no_ask')
+  if self.model_lower_bound is not None and self.model_upper_bound is not None and self.model_lower_bound>self.model_upper_bound:raise ValueError('model_lower_bound cannot exceed model_upper_bound')
+  if self.model_probability is not None and ((self.model_lower_bound is not None and self.model_probability<self.model_lower_bound) or (self.model_upper_bound is not None and self.model_probability>self.model_upper_bound)):raise ValueError('model_probability must lie within model bounds')
   return self
 class EdgeEstimate(BaseModel):
     market_id:str
@@ -61,9 +63,15 @@ class DecisionRecord(BaseModel):
     executable_price:float|None=None; expected_value:float=0; rationale:str; cited_scars:list[str]=Field(default_factory=list)
     cited_principles:list[str]=Field(default_factory=list); gates:list[str]=Field(default_factory=list)
     status:str='paper'; outcome:str='pending'; pnl:float=0; clv:float|None=None
-    resolved_yes:bool|None=None; order_id:str|None=None
-    source:str='manual'; model_version:str|None=None; raw_model_probability:float|None=None; quality_score:float=1; snapshot_hash:str|None=None; observed_at:str|None=None; quote_observed_at:str|None=None; book_sequence:int|None=None
-    fill_model_version:str|None=None; model_lower_bound:float|None=Field(default=None,ge=0,le=1); model_upper_bound:float|None=Field(default=None,ge=0,le=1); model_uncertainty:float|None=Field(default=None,ge=0,le=1); paper_fill_fraction:float=Field(default=1,ge=0,le=1); paper_cost:float=Field(default=0,ge=0); paper_fill_reason:str|None=None; market_context:dict[str,Any]=Field(default_factory=dict)
+    resolved_yes:bool|None=None; resolved_at:str|None=None; order_id:str|None=None
+    source:str='manual'; model_version:str|None=None; raw_model_probability:float|None=None; model_probability:float|None=Field(default=None,ge=0,le=1); quality_score:float=1; snapshot_hash:str|None=None; observed_at:str|None=None; quote_observed_at:str|None=None; book_sequence:int|None=None
+    fill_model_version:str|None=None; model_lower_bound:float|None=Field(default=None,ge=0,le=1); model_upper_bound:float|None=Field(default=None,ge=0,le=1); model_uncertainty:float|None=Field(default=None,ge=0,le=1); model_calibration_samples:int=Field(default=0,ge=0); model_calibration_status:str='unavailable'; paper_fill_fraction:float=Field(default=1,ge=0,le=1); paper_execution_price:float|None=Field(default=None,ge=0,le=1); paper_cost:float=Field(default=0,ge=0); paper_fill_reason:str|None=None; market_context:dict[str,Any]=Field(default_factory=dict)
+
+    @model_validator(mode='after')
+    def valid_model_bounds(self):
+        if self.model_lower_bound is not None and self.model_upper_bound is not None and self.model_lower_bound>self.model_upper_bound:raise ValueError('model_lower_bound cannot exceed model_upper_bound')
+        if self.model_probability is not None and ((self.model_lower_bound is not None and self.model_probability<self.model_lower_bound) or (self.model_upper_bound is not None and self.model_probability>self.model_upper_bound)):raise ValueError('model_probability must lie within model bounds')
+        return self
 
 class OrderBook(BaseModel):
     token_id:str; observed_at:str; bids:list[BookLevel]=Field(default_factory=list); asks:list[BookLevel]=Field(default_factory=list)
