@@ -15,10 +15,15 @@ class OutcomeResolver:
         self.metrics = MetricsEngine(self.memory)
         self.scars = ScarEngine(self.memory)
         self.batch_size = max(1, int(os.getenv("RESOLUTION_BATCH_SIZE", "25")))
+        self.enabled = os.getenv("RESOLUTION_ENABLED", "true").lower() == "true"
 
     def tick(self):
+        if not self.enabled:
+            telemetry.set("vesper_resolution_enabled", 0)
+            return {"checked": 0, "settled": 0, "unresolved": 0, "errors": 0, "pending": 0, "disabled": True}
+        telemetry.set("vesper_resolution_enabled", 1)
         checked = settled = unresolved = errors = 0
-        pending = [decision for decision in self.memory.decisions() if decision.outcome == "pending" and decision.size > 0]
+        pending = [decision for decision in self.memory.decisions() if decision.outcome == "pending" and decision.size > 0 and not decision.market_id.startswith("manual-")]
         for decision in pending[:self.batch_size]:
             checked += 1
             try:
@@ -59,4 +64,5 @@ class OutcomeResolver:
         telemetry.inc("vesper_resolution_ticks_total")
         telemetry.set("vesper_pending_decisions", len(pending))
         telemetry.set("vesper_last_resolved_count", settled)
+        telemetry.set("vesper_last_resolution_errors", errors)
         return {"checked": checked, "settled": settled, "unresolved": unresolved, "errors": errors, "pending": len(pending)}

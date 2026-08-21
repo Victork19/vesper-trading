@@ -9,7 +9,7 @@ class Impact(BaseModel): trust_delta:float=-.2; max_size_multiplier:float=.5; co
 class Scar(BaseModel):
  id:str; strategy_id:str='unknown'; market_id:str='unknown'; market_type:str='unknown'; regime:str='unknown'; type:str; severity:int=Field(ge=1,le=10); pnl:float=0; clv:float=0; lesson:str; principle:str; impact:Impact=Field(default_factory=Impact); linked_scars:list[str]=Field(default_factory=list); status:str='active'; created_at:str=Field(default_factory=now_iso); onchain_anchor:str|None=None
 class Principle(BaseModel): id:str; statement:str; source_scars:list[str]=Field(default_factory=list); strength:int=Field(default=1,ge=1,le=10); strategy_id:str='global'; regime:str='global'; status:str='active'; created_at:str=Field(default_factory=now_iso)
-class ProcessSnapshot(BaseModel): strategy_id:str; market_type:str; regime:str; decisions:int=0; wins:int=0; pnl:float=0; clv_sum:float=0; expectancy:float=0; rule_adherence:float=1; decision_quality:float=.5; profit_factor:float=0; updated_at:str=Field(default_factory=now_iso)
+class ProcessSnapshot(BaseModel): strategy_id:str; market_type:str; regime:str; decisions:int=0; wins:int=0; pnl:float=0; clv_sum:float=0; expectancy:float=0; rule_adherence:float=1; decision_quality:float=.5; profit_factor:float=0; gross_profit:float=0; gross_loss:float=0; brier_score:float|None=None; log_loss:float|None=None; calibration_error:float|None=None; updated_at:str=Field(default_factory=now_iso)
 class BookLevel(BaseModel): price:float=Field(ge=0,le=1); size:float=Field(ge=0)
 class HotState(BaseModel): mode:Mode=Mode.PAPER; trust:dict[str,float]=Field(default_factory=dict); active_constraints:list[str]=Field(default_factory=list); open_risk:float=0; portfolio_heat:float=0; correlation_regime:str='baseline'; capacity_utilization:float=0; daily_pnl:float=0; weekly_pnl:float=0; last_context:str=''
 class MarketInput(BaseModel):
@@ -61,6 +61,7 @@ class DecisionRecord(BaseModel):
     cited_principles:list[str]=Field(default_factory=list); gates:list[str]=Field(default_factory=list)
     status:str='paper'; outcome:str='pending'; pnl:float=0; clv:float|None=None
     resolved_yes:bool|None=None; order_id:str|None=None
+    source:str='manual'; quality_score:float=1; observed_at:str|None=None; quote_observed_at:str|None=None; book_sequence:int|None=None
 
 class OrderBook(BaseModel):
     token_id:str; observed_at:str; bids:list[BookLevel]=Field(default_factory=list); asks:list[BookLevel]=Field(default_factory=list)

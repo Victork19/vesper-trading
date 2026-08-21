@@ -40,7 +40,7 @@ def settle_decision(
     hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
     memory.save_hot(hot)
 
-    snapshot = metrics.outcome(decision, pnl, clv, 1.0 if evidence_complete else .5)
+    snapshot = metrics.outcome(decision, pnl, clv, 1.0 if evidence_complete else .5, resolved_yes)
     memory.event("outcome_recorded", {
         "decision_id": decision.id,
         "outcome": outcome,
@@ -66,7 +66,7 @@ def settle_decision(
 
 def parse_terminal_resolution(market: dict[str, Any]) -> bool | None:
     """Return the resolved YES/NO result only when the market is unambiguously terminal."""
-    resolved = market.get("resolved") is True or market.get("resolution") not in (None, "", False)
+    resolved = market.get("resolved") is True or str(market.get("resolved", "")).lower() == "true" or market.get("resolution") not in (None, "", False)
     if not resolved and market.get("closed") is not True:
         return None
 
@@ -82,6 +82,11 @@ def parse_terminal_resolution(market: dict[str, Any]) -> bool | None:
             prices = json.loads(prices)
         except json.JSONDecodeError:
             prices = []
+    explicit_winner = market.get("winner") or market.get("winningOutcome") or market.get("winning_outcome")
+    if explicit_winner is not None:
+        label = str(explicit_winner).strip().lower()
+        if label in ("yes", "true", "1"): return True
+        if label in ("no", "false", "0"): return False
     try:
         prices = [float(value) for value in prices]
     except (TypeError, ValueError):
