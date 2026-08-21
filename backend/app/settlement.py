@@ -21,6 +21,7 @@ def settle_decision(
     evidence_complete: bool = True,
     source: str = "operator",
     resolution: dict[str, Any] | None = None,
+    process_score: float | None = None,
 ) -> DecisionRecord:
     """Apply one terminal outcome to a decision and update learning state."""
     if decision.outcome != "pending":
@@ -40,7 +41,8 @@ def settle_decision(
     hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
     memory.save_hot(hot)
 
-    snapshot = metrics.outcome(decision, pnl, clv, 1.0 if evidence_complete else .5, resolved_yes)
+    measured_process_score=max(0.0,min(1.0,process_score if process_score is not None else (1.0 if pnl>0 and evidence_complete else .5 if evidence_complete else .25)))
+    snapshot = metrics.outcome(decision, pnl, clv, measured_process_score, resolved_yes)
     memory.event("outcome_recorded", {
         "decision_id": decision.id,
         "outcome": outcome,
@@ -57,10 +59,12 @@ def settle_decision(
     telemetry.set("vesper_portfolio_heat", hot.portfolio_heat)
 
     if outcome in ("loss", "failure", "negative"):
-        scar, principle = scars.failure(decision, "Negative outcome or process result; require stronger evidence before repeating this bucket.")
+        scar, principle = scars.failure(decision, "Negative outcome or process result; require stronger evidence before repeating this bucket.",failure_type='negative_outcome' if outcome=='loss' else 'negative_process',process_score=measured_process_score)
         decision.cited_scars.append(scar.id)
         decision.cited_principles.append(principle.id)
         memory.put("COLD", decision.id, decision.model_dump())
+    elif outcome in ("win", "push"):
+        scars.rehabilitate(decision,clv)
     return decision
 
 

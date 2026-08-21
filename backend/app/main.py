@@ -195,8 +195,8 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
  if not strategy:raise HTTPException(422,f'Unknown strategy: {req.strategy_id}')
  history=[1 if d.resolved_yes else 0 for d in memory.decisions() if d.market_type==req.market.market_type and d.resolved_yes is not None]
  calibrated=reference.calibrated_prior(req.market.market_type,req.market.reference_rate if req.market.reference_rate is not None else .5,history)
- e=edge.estimate(req.market,calibrated);trust=memory.effective_trust(req.strategy_id,req.market.market_type,req.market.market_id)
- size,gates=risk.size(e,req.market,trust,strategy,settings.max_portfolio_heat)
+ e=edge.estimate(req.market,calibrated);trust=memory.effective_trust(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
+ size,gates=risk.size(e,req.market,trust,strategy,settings.max_portfolio_heat);size*=memory.scar_size_multiplier(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
  quality_gates=[]
  quote_time=req.market.quote_observed_at or req.market.observed_at
  if quote_time is not None and (datetime.now(timezone.utc)-quote_time).total_seconds()>120:quality_gates.append('stale_market_input')
@@ -205,7 +205,7 @@ def decide(req:DecisionRequest,_=Depends(require_trade)):
  if h.mode in (Mode.SHADOW,Mode.LIVE) and req.market.source=='manual':quality_gates.append('untrusted_market_source')
  if h.mode in (Mode.SHADOW,Mode.LIVE) and (req.market.yes_ask is None or req.market.no_ask is None):quality_gates.append('executable_quote_required')
  if quality_gates:size=0;gates+=quality_gates
- flow=toxic.inspect(req.market,req.flow_imbalance,req.large_wallet_signal);size,risk_reasons=portfolio.gate(req.market,size,req.flow_imbalance,req.large_wallet_signal);gates+=risk_reasons+flow['flags'];relevant=memory.active_scars(req.strategy_id,req.market.market_type,req.market.market_id);principles=[p for p in memory.principles() if p.status=='active' and p.strategy_id in (req.strategy_id,'global')];cited=[s.id for s in relevant];cp=[p.id for p in principles]
+ flow=toxic.inspect(req.market,req.flow_imbalance,req.large_wallet_signal);size,risk_reasons=portfolio.gate(req.market,size,req.flow_imbalance,req.large_wallet_signal);gates+=risk_reasons+flow['flags'];relevant=memory.active_scars(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime);principles=[p for p in memory.principles() if p.status=='active' and p.strategy_id in (req.strategy_id,'global')];cited=[s.id for s in relevant];cp=[p.id for p in principles]
  if bucket_killer.suspended(req.strategy_id,req.market.market_type,req.market.regime):size=0;gates+=['bucket_suspended_negative_expectancy']
  if any(s.impact.constitutional and s.impact.max_size_multiplier<=0 for s in relevant):size=0;gates+=['scar_constitutional_stop']
  if not req.evidence_complete:size=0;gates+=['evidence_completeness_gate']
@@ -237,7 +237,7 @@ def outcome(req:OutcomeRequest,_=Depends(require_trade)):
   if req.outcome in ('win','loss') and ((req.outcome=='win')!=won):raise HTTPException(422,'Outcome conflicts with resolved market result')
   if req.outcome in ('win','loss') and d.executable_price is not None:
    settled_pnl=d.size*(1-d.executable_price) if won else -d.size*d.executable_price
- return settle_decision(memory,metrics_engine,scars,d,req.outcome,settled_pnl,req.clv,req.resolved_yes,req.evidence_complete,'operator')
+ return settle_decision(memory,metrics_engine,scars,d,req.outcome,settled_pnl,req.clv,req.resolved_yes,req.evidence_complete,'operator',process_score=req.process_score)
 @app.post('/demo/clear-learning')
 def clear_learning(_=Depends(require_admin)):memory.delete_learning_memory();return {'message':'Learning memory removed; the agent returns to naive behavior.'}
 @app.post('/demo/seed-market')

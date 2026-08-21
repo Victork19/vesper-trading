@@ -1,4 +1,5 @@
 import math,uuid
+from datetime import datetime,timedelta,timezone
 from .models import *
 class EdgeEngine:
  def estimate(self,m,calibrated_prior=None):
@@ -40,5 +41,19 @@ class RiskEngine:
   return max(0,size),['all_risk_gates_passed']
 class ScarEngine:
  def __init__(self,memory):self.memory=memory
- def failure(self,d,reason='negative process outcome'):
-  s=Scar(id='scar_'+uuid.uuid4().hex[:8],strategy_id=d.strategy_id,market_id=d.market_id,type='negative_clv' if d.clv and d.clv<0 else 'large_loss',severity=7,pnl=0,clv=d.clv or 0,lesson=reason,principle='Reduce size and require stronger evidence before repeating this strategy and market condition.',impact=Impact(trust_delta=-.2,max_size_multiplier=.5,cooldown_hours=48));self.memory.put('WARM',s.id,s.model_dump());self.memory.event('scar_created',s.model_dump());p=Principle(id='principle_'+uuid.uuid4().hex[:7],statement=s.principle,source_scars=[s.id],strength=3,strategy_id=d.strategy_id);self.memory.put('WARM',p.id,p.model_dump());return s,p
+ def failure(self,d,reason='negative process outcome',failure_type=None,process_score=0.0):
+  failure_type=failure_type or ('negative_clv' if d.clv is not None and d.clv<0 else 'large_loss')
+  severity=min(10,max(1,6+int(abs(min(0,d.pnl))*2)+int(abs(min(0,d.clv or 0))*10)))
+  principle='Reduce size and require stronger evidence before repeating this strategy and market condition.'
+  now=datetime.now(timezone.utc);cooldown_hours=24+severity*4
+  s=Scar(id='scar_'+uuid.uuid4().hex[:8],strategy_id=d.strategy_id,market_id=d.market_id,market_type=d.market_type,regime=d.regime,type=failure_type,failure_type=failure_type,severity=severity,pnl=d.pnl,clv=d.clv or 0,process_score=process_score,lesson=reason,principle=principle,impact=Impact(trust_delta=-min(.4,.1+severity*.02),max_size_multiplier=max(.2,.8-severity*.05),cooldown_hours=cooldown_hours),affected_buckets=[d.strategy_id,d.market_type,d.regime],cooldown_until=(now+timedelta(hours=cooldown_hours)).isoformat().replace('+00:00','Z'))
+  self.memory.put('WARM',s.id,s.model_dump());self.memory.event('scar_created',s.model_dump());p=Principle(id='principle_'+uuid.uuid4().hex[:7],statement=s.principle,source_scars=[s.id],strength=min(10,3+severity//2),strategy_id=d.strategy_id,regime=d.regime);self.memory.put('WARM',p.id,p.model_dump());return s,p
+ def rehabilitate(self,d,clv=0.0):
+  changed=[]
+  for scar in self.memory.scars():
+   if scar.status in ('resolved','rehabilitated') or scar.strategy_id!=d.strategy_id or scar.market_type not in (d.market_type,'unknown','global') or scar.regime not in (d.regime,'unknown','global'):continue
+   if clv<0 or any(x in d.gates for x in ('daily_kill_switch','weekly_kill_switch','scar_constitutional_stop')):continue
+   scar.status='rehabilitating';scar.rehabilitation_progress=min(scar.rehabilitation_required,scar.rehabilitation_progress+1);scar.impact.max_size_multiplier=min(1.0,scar.impact.max_size_multiplier+.1)
+   if scar.rehabilitation_progress>=scar.rehabilitation_required:scar.status='rehabilitated';scar.resolved_at=now_iso();scar.impact.trust_delta=0;scar.impact.max_size_multiplier=1.0
+   self.memory.put('WARM',scar.id,scar.model_dump());self.memory.event('scar_rehabilitation_progress',{'scar_id':scar.id,'progress':scar.rehabilitation_progress,'required':scar.rehabilitation_required,'status':scar.status});changed.append(scar)
+  return changed

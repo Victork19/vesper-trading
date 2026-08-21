@@ -55,6 +55,7 @@ class OutcomeResolver:
                         "outcomes": market.get("outcomes"),
                         "outcomePrices": market.get("outcomePrices"),
                     },
+                    process_score=1.0 if outcome=='win' else 0.0,
                 )
                 settled += 1
             except Exception as exc:

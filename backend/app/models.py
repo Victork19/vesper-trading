@@ -7,7 +7,7 @@ class Mode(str,Enum): PAPER='paper'; SHADOW='shadow'; LIVE='live'
 class OrderStatus(str,Enum): NEW='new'; ACCEPTED='accepted'; PARTIALLY_FILLED='partially_filled'; FILLED='filled'; CANCELED='canceled'; REJECTED='rejected'; FAILED='failed'
 class Impact(BaseModel): trust_delta:float=-.2; max_size_multiplier:float=.5; cooldown_hours:int=24; new_filters:list[str]=Field(default_factory=list); constitutional:bool=True
 class Scar(BaseModel):
- id:str; strategy_id:str='unknown'; market_id:str='unknown'; market_type:str='unknown'; regime:str='unknown'; type:str; severity:int=Field(ge=1,le=10); pnl:float=0; clv:float=0; lesson:str; principle:str; impact:Impact=Field(default_factory=Impact); linked_scars:list[str]=Field(default_factory=list); status:str='active'; created_at:str=Field(default_factory=now_iso); onchain_anchor:str|None=None
+ id:str; strategy_id:str='unknown'; market_id:str='unknown'; market_type:str='unknown'; regime:str='unknown'; type:str; failure_type:str='negative_process'; severity:int=Field(ge=1,le=10); pnl:float=0; clv:float=0; process_score:float=Field(default=0,ge=0,le=1); lesson:str; principle:str; impact:Impact=Field(default_factory=Impact); affected_buckets:list[str]=Field(default_factory=list); cooldown_until:str|None=None; rehabilitation_condition:str='Require three qualifying positive resolved outcomes with non-negative CLV and no constitutional rule violations.'; rehabilitation_required:int=3; rehabilitation_progress:int=0; linked_scars:list[str]=Field(default_factory=list); status:str='active'; created_at:str=Field(default_factory=now_iso); resolved_at:str|None=None; onchain_anchor:str|None=None
 class Principle(BaseModel): id:str; statement:str; source_scars:list[str]=Field(default_factory=list); strength:int=Field(default=1,ge=1,le=10); strategy_id:str='global'; regime:str='global'; status:str='active'; created_at:str=Field(default_factory=now_iso)
 class ProcessSnapshot(BaseModel): strategy_id:str; market_type:str; regime:str; decisions:int=0; wins:int=0; pnl:float=0; clv_sum:float=0; expectancy:float=0; rule_adherence:float=1; decision_quality:float=.5; profit_factor:float=0; gross_profit:float=0; gross_loss:float=0; brier_score:float|None=None; log_loss:float|None=None; calibration_error:float|None=None; updated_at:str=Field(default_factory=now_iso)
 class BookLevel(BaseModel): price:float=Field(ge=0,le=1); size:float=Field(ge=0)
@@ -91,6 +91,7 @@ class OutcomeRequest(BaseModel):
  pnl:float=0
  clv:float=0
  evidence_complete:bool=True
+ process_score:float|None=Field(default=None,ge=0,le=1)
  resolved_yes:bool|None=None
 
  @field_validator('outcome')

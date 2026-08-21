@@ -36,20 +36,26 @@ class TradingMemory:
  def orders(self):
   with self.db.connection() as c:return [self._order(r) for r in c.execute('SELECT * FROM orders ORDER BY created_at DESC').fetchall()]
  def snapshots(self):return [ProcessSnapshot.model_validate(x) for x in self.all('WARM') if 'expectancy' in x]
- def active_scars(self,strategy_id='unknown',market_type='unknown',market_id='unknown'):
+ def active_scars(self,strategy_id='unknown',market_type='unknown',market_id='unknown',regime='unknown'):
   now=datetime.now(timezone.utc);result=[]
   for scar in self.scars():
-   if scar.status!='active' or scar.strategy_id not in (strategy_id,'unknown','global') or scar.market_type not in (market_type,'unknown','global') or scar.market_id not in (market_id,'unknown','global'):continue
+   bucket_match=scar.market_id in (market_id,'unknown','global') or (scar.market_type in (market_type,'unknown','global') and scar.regime in (regime,'unknown','global'))
+   if scar.status not in ('active','rehabilitating') or scar.strategy_id not in (strategy_id,'unknown','global') or not bucket_match:continue
    try:
     created=datetime.fromisoformat(scar.created_at.replace('Z','+00:00'))
     if created+timedelta(hours=scar.impact.cooldown_hours)>now:result.append(scar);continue
    except ValueError:pass
    result.append(scar)
   return result
- def effective_trust(self,strategy_id,market_type='unknown',market_id='unknown'):
+ def effective_trust(self,strategy_id,market_type='unknown',market_id='unknown',regime='unknown'):
   value=self.hot().trust.get(strategy_id,.5)
-  for scar in self.active_scars(strategy_id,market_type,market_id):value+=scar.impact.trust_delta
-  return max(0,min(1,value))
+  scars=self.active_scars(strategy_id,market_type,market_id,regime)
+  for scar in scars:value+=scar.impact.trust_delta
+  return max(.25 if scars else 0,min(1,value))
+ def scar_size_multiplier(self,strategy_id,market_type='unknown',market_id='unknown',regime='unknown'):
+  value=1.0
+  for scar in self.active_scars(strategy_id,market_type,market_id,regime):value*=max(0,min(1,scar.impact.max_size_multiplier))
+  return max(0.05,min(1,value))
  def event(self,name,payload):
   with self.lock:
    event_id='event_'+uuid.uuid4().hex;created=now_iso();body={'event':name,'payload':payload,'created_at':created,'event_id':event_id}
