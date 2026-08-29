@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS execution_attempts (id BIGSERIAL PRIMARY KEY, decision_id TEXT NOT NULL, client_order_id TEXT NOT NULL, attempt INTEGER NOT NULL, action TEXT NOT NULL, status TEXT NOT NULL, request JSONB NOT NULL, response JSONB NOT NULL DEFAULT '{}'::jsonb, error TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(decision_id, attempt, action));
+CREATE INDEX IF NOT EXISTS idx_execution_attempts_decision ON execution_attempts(decision_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_execution_attempts_client ON execution_attempts(client_order_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS execution_fills (fill_id TEXT PRIMARY KEY, order_id TEXT NOT NULL, venue_order_id TEXT NOT NULL, quantity DOUBLE PRECISION NOT NULL CHECK(quantity > 0), price DOUBLE PRECISION NOT NULL CHECK(price >= 0 AND price <= 1), fee DOUBLE PRECISION NOT NULL DEFAULT 0 CHECK(fee >= 0), observed_at TIMESTAMPTZ NOT NULL, payload JSONB NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_execution_fills_order ON execution_fills(order_id, observed_at DESC);
+CREATE TABLE IF NOT EXISTS account_snapshots (id BIGSERIAL PRIMARY KEY, source TEXT NOT NULL, wallet_address TEXT, collateral_balance DOUBLE PRECISION, reserved_capital DOUBLE PRECISION, available_capital DOUBLE PRECISION, allowances JSONB NOT NULL DEFAULT '{}'::jsonb, payload JSONB NOT NULL, observed_at TIMESTAMPTZ NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_account_snapshots_observed ON account_snapshots(observed_at DESC);
+CREATE TABLE IF NOT EXISTS execution_circuit (name TEXT PRIMARY KEY, state TEXT NOT NULL, failures INTEGER NOT NULL DEFAULT 0, opened_at TIMESTAMPTZ, next_probe_at TIMESTAMPTZ, last_error TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE TABLE IF NOT EXISTS live_kill_switch (id INTEGER PRIMARY KEY, active BOOLEAN NOT NULL, phase TEXT NOT NULL DEFAULT 'RUNNING', reason TEXT, actor TEXT, activated_at TIMESTAMPTZ, released_at TIMESTAMPTZ, release_actor TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+INSERT INTO live_kill_switch(id,active,phase,updated_at) VALUES (1,FALSE,'RUNNING',NOW()) ON CONFLICT (id) DO NOTHING;

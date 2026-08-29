@@ -1,6 +1,23 @@
-import math,uuid
+import math,os,uuid
 from datetime import datetime,timedelta,timezone
 from .models import *
+from .research_validation import executable_benchmark, exposure_notional
+
+def collateral_cost(price, fee_rate=0.0, slippage_bps=0.0):
+    """Collateral required for one contract, including conservative costs."""
+    price=max(0.0,min(1.0,float(price)))
+    return price + price*max(0.0,float(slippage_bps))/10000 + max(0.0,float(fee_rate))*(1-price)
+
+def kelly_fraction(probability, executable_cost, fraction=.5):
+    """Fraction of bankroll for a binary contract, after executable costs."""
+    p=max(0.0,min(1.0,float(probability))); cost=max(1e-9,min(1.0,float(executable_cost)))
+    edge=p-cost
+    return max(0.0,edge/max(1e-9,1-cost))*max(0.0,min(1.0,float(fraction)))
+
+def kelly_contracts(probability, executable_cost, bankroll, fraction=.5, max_contracts=None):
+    """Convert bankroll Kelly fraction into contracts; never return a bankroll fraction."""
+    contracts=kelly_fraction(probability,executable_cost,fraction)*max(0.0,float(bankroll))/max(1e-9,float(executable_cost))
+    return max(0.0,min(contracts,float(max_contracts))) if max_contracts is not None else max(0.0,contracts)
 class EdgeEngine:
  def estimate(self,m,calibrated_prior=None):
   # Never manufacture a bullish/bearish edge from a neutral 0.5 prior.  When
@@ -29,18 +46,28 @@ class EdgeEngine:
 class RiskEngine:
  def __init__(self,memory):self.memory=memory
  def size(self,e,m,trust,strategy,max_heat):
-  if m.liquidity<1000 or m.volume_24h<5000:return 0,['liquidity_gate']
+  if m.liquidity<1000 or (m.volume_known and m.volume_24h<5000):return 0,['liquidity_gate']
   if e.raw_edge<strategy.min_edge:return 0,['minimum_edge_gate']
   if trust<.25:return 0,['trust_gate']
   if self.memory.hot().portfolio_heat>=max_heat:return 0,['portfolio_heat_gate']
+  conservative=e.side_probability
+  if e.recommended_side=='YES' and m.model_lower_bound is not None:conservative=min(conservative,m.model_lower_bound)
+  if e.recommended_side=='NO' and m.model_upper_bound is not None:conservative=min(conservative,1-m.model_upper_bound)
+  if conservative<=e.executable_price:return 0,['uncertainty_gate']
   capacity=min(1,m.liquidity/100000)
   corr=.5 if self.memory.hot().correlation_regime=='elevated' else .7 if self.memory.hot().correlation_regime=='crisis' else .2
-  # Half-Kelly on the executable binary contract, capped by strategy policy.
-  denominator=max(.01,1-e.executable_price)
-  kelly=max(0,(e.side_probability-e.executable_price)/denominator)
-  size=min(strategy.max_size,kelly*.5)*trust*capacity*(1-corr/2)
-  if self.memory.hot().portfolio_heat+size>max_heat:
-   size=max(0,max_heat-self.memory.hot().portfolio_heat)
+  # Kelly is a bankroll fraction. Convert it into contracts using collateral
+  # cost, then apply the portfolio's remaining collateral capacity.
+  benchmark=executable_benchmark(m,e.recommended_side)
+  cost=float(benchmark['cost'])
+  bankroll=max(0.0,float(os.getenv('RISK_BANKROLL','1.0')))
+  kelly=kelly_contracts(conservative,cost,bankroll,.5,max_contracts=strategy.max_size)
+  uncertainty=m.model_uncertainty if m.model_uncertainty is not None else e.uncertainty
+  size=kelly*trust*capacity*(1-corr/2)*max(.15,1-uncertainty)
+  remaining_collateral=max(0,float(max_heat)-float(self.memory.hot().portfolio_heat))
+  size=min(size,remaining_collateral/max(1e-9,cost))
+  if self.memory.hot().portfolio_heat+size*cost>max_heat:
+   size=max(0,remaining_collateral/max(1e-9,cost))
    return size,['portfolio_heat_cap','all_risk_gates_passed'] if size else ['portfolio_heat_gate']
   return max(0,size),['all_risk_gates_passed']
 class ScarEngine:

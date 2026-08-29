@@ -9,6 +9,7 @@ from app.resolver import OutcomeResolver
 from app.settlement import parse_terminal_resolution
 c=TestClient(app,headers={'X-Vesper-Key':'client-test-key'})
 admin={'X-Vesper-Key':'admin-test-key'}
+settlement={'X-Vesper-Key':'settlement-test-key'}
 def paper_books():
  return {'book_asks':[{'price':.4,'size':1}], 'yes_book_asks':[{'price':.4,'size':1}], 'no_book_asks':[{'price':.4,'size':1}]}
 def test_health(): assert c.get('/health').json()['memory_load_bearing'] is True
@@ -20,7 +21,7 @@ def test_paper_decision_and_deletion():
 def test_failure_changes_future_decision():
  payload={'market':{'market_id':'m2','question':'Will event resolve yes?','price':.45,'liquidity':25000,'volume_24h':100000,'reference_rate':.60,**paper_books()},'strategy_id':'reference_class'}
  first=c.post('/decide',json=payload).json()
- c.post('/outcomes',json={'decision_id':first['id'],'outcome':'loss','pnl':-1,'clv':-.05})
+ c.post('/outcomes',headers=settlement,json={'decision_id':first['id'],'outcome':'loss','clv':-.05})
  second=c.post('/decide',json=payload).json()
  assert second['cited_scars']
  assert second['action']=='DO NOTHING'
@@ -97,9 +98,9 @@ def test_worker_failure_backoff_is_bounded_and_resets():
 def test_outcome_is_idempotent_and_terminal():
  payload={'market':{'market_id':'idempotency','question':'Will event resolve yes?','price':.45,'liquidity':25000,'volume_24h':100000,'reference_rate':.60,**paper_books()},'strategy_id':'reference_class'}
  decision=c.post('/decide',json=payload).json()
- response=c.post('/outcomes',json={'decision_id':decision['id'],'outcome':'loss','pnl':-1})
+ response=c.post('/outcomes',headers=settlement,json={'decision_id':decision['id'],'outcome':'loss'})
  assert response.status_code==200 and response.json()['resolved_at']
- assert c.post('/outcomes',json={'decision_id':decision['id'],'outcome':'loss','pnl':-1}).status_code==409
+ assert c.post('/outcomes',headers=settlement,json={'decision_id':decision['id'],'outcome':'loss'}).status_code==409
 
 def test_learning_reset_is_serializable():
  assert c.post('/demo/clear-learning',headers=admin).status_code==200
@@ -107,7 +108,7 @@ def test_learning_reset_is_serializable():
 def test_settlement_uses_contract_payoff_when_resolution_is_known():
  payload={'market':{'market_id':'known-resolution','question':'Will event resolve yes?','price':.40,'liquidity':25000,'volume_24h':100000,'reference_rate':.70,**paper_books()},'strategy_id':'reference_class'}
  decision=c.post('/decide',json=payload).json()
- response=c.post('/outcomes',json={'decision_id':decision['id'],'outcome':'win','pnl':999,'resolved_yes':True})
+ response=c.post('/outcomes',headers=settlement,json={'decision_id':decision['id'],'outcome':'win','resolved_yes':True})
  assert response.status_code==200
  assert response.json()['pnl']<1
 

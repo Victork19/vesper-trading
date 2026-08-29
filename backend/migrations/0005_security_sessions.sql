@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS security_sessions (session_id TEXT PRIMARY KEY, token_digest TEXT NOT NULL UNIQUE, key_id TEXT NOT NULL, scope TEXT NOT NULL, csrf_digest TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
+CREATE INDEX IF NOT EXISTS idx_security_sessions_active ON security_sessions(key_id,expires_at) WHERE revoked_at IS NULL;

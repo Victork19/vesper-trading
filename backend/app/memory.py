@@ -17,8 +17,30 @@ class TradingMemory:
    r=c.execute('SELECT value FROM memory WHERE tier=%s AND key=%s',(tier,key)).fetchone();return r['value'] if r else None
  def all(self,tier):
   with self.db.connection() as c:return [r['value'] for r in c.execute('SELECT value FROM memory WHERE tier=%s ORDER BY updated_at DESC',(tier,)).fetchall()]
- def hot(self):return HotState.model_validate(self.get('HOT','state') or {})
+ def hot(self):
+  # Calendar rollover is a state transition, not a read-side convenience.
+  # Lock the row so two API/worker processes cannot reset a newly accumulated
+  # PnL/heat projection from stale snapshots.
+  with self.db.connection() as c:
+   row=c.execute("SELECT value FROM memory WHERE tier='HOT' AND key='state' FOR UPDATE").fetchone()
+   state=HotState.model_validate(row['value'] if row else {})
+   day,week=pnl_bucket_keys();changed=False
+   if state.pnl_day!=day:state.daily_pnl=0;state.pnl_day=day;changed=True
+   if state.pnl_week!=week:state.weekly_pnl=0;state.pnl_week=week;changed=True
+   if changed:
+    c.execute("INSERT INTO memory(tier,key,value,updated_at) VALUES('HOT','state',%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",(self.db.json(state.model_dump()),now_iso()))
+   return state
  def save_hot(self,x):self.put('HOT','state',x.model_dump())
+ def hot_for_update(self,connection):
+  """Load the hot state under the caller's transaction/row lock."""
+  row=connection.execute("SELECT value FROM memory WHERE tier='HOT' AND key='state' FOR UPDATE").fetchone()
+  state=HotState.model_validate(row['value'] if row else {})
+  day,week=pnl_bucket_keys()
+  if state.pnl_day!=day:
+   state.daily_pnl=0;state.pnl_day=day
+  if state.pnl_week!=week:
+   state.weekly_pnl=0;state.pnl_week=week
+  return state
  def save_decision(self,decision,hot=None):
   """Persist a decision and optional heat reservation in one transaction."""
   with self.lock:
@@ -36,6 +58,13 @@ class TradingMemory:
    if connection is not None:write(connection)
    else:
     with self.db.connection() as c:write(c)
+ def settle_reservations(self,decision_id,connection):
+  """Atomically close reservations belonging to a settled decision."""
+  rows=connection.execute("SELECT reservation_id,state FROM capital_reservations WHERE decision_id=%s FOR UPDATE",(decision_id,)).fetchall()
+  for row in rows:
+   if row['state'] in ('released','settled'): continue
+   connection.execute("UPDATE capital_reservations SET state='settled',released_at=COALESCE(released_at,NOW()) WHERE reservation_id=%s",(row['reservation_id'],))
+  return len(rows)
  def scars(self):
   with self.db.connection() as c:return [Scar.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'lesson' ORDER BY updated_at DESC").fetchall()]
  def principles(self):
@@ -44,17 +73,24 @@ class TradingMemory:
   with self.db.connection() as c:return [DecisionRecord.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='COLD' AND value ? 'action' ORDER BY updated_at DESC").fetchall()]
  def save_order(self,order,decision=None):
   allowed={
-   'new':{'new','accepted','rejected','failed'},
-   'accepted':{'accepted','partially_filled','filled','canceled','rejected','failed'},
-   'partially_filled':{'partially_filled','filled','canceled','failed'},
-   'filled':{'filled'},'canceled':{'canceled'},'rejected':{'rejected'},'failed':{'failed'}
+   'new':{'new','accepted','rejected','failed','unknown','reconciliation_required'},
+   'accepted':{'accepted','partially_filled','filled','canceled','cancel_requested','expired','rejected','failed','unknown','reconciliation_required'},
+   'partially_filled':{'partially_filled','filled','canceled','cancel_requested','expired','failed','unknown','reconciliation_required'},
+   'cancel_requested':{'cancel_requested','canceled','filled','partially_filled','expired','unknown','reconciliation_required'},
+   'unknown':{'unknown','accepted','partially_filled','filled','canceled','cancel_requested','expired','rejected','failed','reconciliation_required'},
+   'reconciliation_required':{'reconciliation_required','accepted','partially_filled','filled','canceled','cancel_requested','expired','rejected','failed','unknown'},
+   'filled':{'filled'},'canceled':{'canceled'},'expired':{'expired'},'rejected':{'rejected'},'failed':{'failed'}
   }
   with self.lock:
    with self.db.connection() as c:
-    existing=c.execute('SELECT status FROM orders WHERE id=%s FOR UPDATE',(order.id,)).fetchone();new_status=order.status.value
+    existing=c.execute('SELECT status,filled_size,filled_notional,filled_fees,average_fill_price FROM orders WHERE id=%s FOR UPDATE',(order.id,)).fetchone();new_status=order.status.value
     if existing and new_status not in allowed.get(existing['status'],set()):raise ValueError(f'illegal order transition: {existing["status"]} -> {new_status}')
     if order.filled_size<0 or order.filled_size>order.requested_size:raise ValueError('filled size must be within requested size')
-    c.execute('''INSERT INTO orders(id,client_order_id,decision_id,mode,market_id,side,requested_size,limit_price,status,filled_size,average_fill_price,venue_order_id,error,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,filled_size=EXCLUDED.filled_size,average_fill_price=EXCLUDED.average_fill_price,venue_order_id=EXCLUDED.venue_order_id,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at''',(order.id,order.client_order_id,order.decision_id,order.mode.value,order.market_id,order.side,order.requested_size,order.limit_price,order.status.value,order.filled_size,order.average_fill_price,order.venue_order_id,order.error,order.created_at,order.updated_at))
+    if existing and order.filled_size+1e-12<float(existing['filled_size']):raise ValueError('filled size cannot decrease during reconciliation')
+    if existing and order.filled_notional+1e-9<float(existing['filled_notional'] or 0):raise ValueError('filled notional cannot decrease during reconciliation')
+    if existing and order.filled_fees+1e-9<float(existing['filled_fees'] or 0):raise ValueError('filled fees cannot decrease during reconciliation')
+    if existing and existing['status'] in ('filled','canceled','expired','rejected','failed') and (abs(order.filled_size-float(existing['filled_size'] or 0))>1e-12 or abs(order.filled_notional-float(existing['filled_notional'] or 0))>1e-9 or abs(order.filled_fees-float(existing['filled_fees'] or 0))>1e-9):raise ValueError('terminal order fill state is immutable')
+    c.execute('''INSERT INTO orders(id,client_order_id,decision_id,mode,market_id,side,requested_size,limit_price,status,filled_size,filled_notional,filled_fees,average_fill_price,venue_order_id,error,created_at,updated_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,filled_size=EXCLUDED.filled_size,filled_notional=EXCLUDED.filled_notional,filled_fees=EXCLUDED.filled_fees,average_fill_price=EXCLUDED.average_fill_price,venue_order_id=EXCLUDED.venue_order_id,error=EXCLUDED.error,updated_at=EXCLUDED.updated_at''',(order.id,order.client_order_id,order.decision_id,order.mode.value,order.market_id,order.side,order.requested_size,order.limit_price,order.status.value,order.filled_size,order.filled_notional,order.filled_fees,order.average_fill_price,order.venue_order_id,order.error,order.created_at,order.updated_at))
     if decision is not None:
      c.execute('INSERT INTO memory(tier,key,value,updated_at) VALUES(%s,%s,%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at',('COLD',decision.id,self.db.json(decision.model_dump()),now_iso()))
  def _order(self,row):

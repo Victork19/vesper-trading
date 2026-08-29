@@ -39,7 +39,7 @@ def test_paper_fill_model_is_depth_aware_and_replayable():
   quality_score=1.0
  first=paper_fill_profile(Market(),.02)
  second=paper_fill_profile(Market(),.02)
- assert first==second and first[0]==.5
+ assert first==second and abs(first[0]-.425)<1e-9
 
 def test_paper_fill_model_fails_closed_without_depth():
  class Market:
@@ -61,8 +61,8 @@ def test_paper_execution_walks_depth_and_returns_vwap_price():
   fee_rate=0.0
   slippage_bps=0.0
  profile=paper_execution_profile(Market(),.015)
- assert profile['fill_fraction']==1 and abs(profile['average_quote_price']-(.004+.0025)/.015)<1e-9
- assert profile['execution_price']==profile['average_quote_price']
+ assert profile['fill_fraction']==.85 and abs(profile['average_quote_price']-(.004+.0025)/.015)<1e-9
+ assert profile['execution_price']>profile['average_quote_price']
 
 def test_paper_execution_marks_partial_depth_as_partial_fill():
  from app.adapters import PaperExecution
@@ -117,7 +117,7 @@ def test_market_input_keeps_independent_yes_and_no_books():
  market=PolymarketData().to_input(item,yes_book=yes,no_book=no)
  assert market.yes_token_id=='yes-token' and market.no_token_id=='no-token'
  assert market.yes_ask==.6 and market.no_ask==.4 and market.no_book_asks[0].size==.01
- assert paper_fill_profile(market,.02,'NO')[0]==.5
+ assert abs(paper_fill_profile(market,.02,'NO')[0]-.425)<1e-9
 
 def test_market_input_measures_contract_quote_skew():
  item={'id':'skewed-books','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}

@@ -82,7 +82,32 @@ The frontend uses `/markets/input/{market_id}` before evaluation to obtain a fre
 
 `/ready` reports explicit API, memory, data-quality, freshness, and live-safety checks. Live mode additionally requires a configured `OPERATOR_APPROVAL_CODE`, a successful `/operator/request-live`, positive capital/order limits, `LIVE_TRADING_ENABLED=true`, a sufficient chronological out-of-sample sample, and positive lower confidence bounds for OOS expectancy and Brier/log-loss lift versus the market baseline. Revoke approval with `/operator/revoke-live`.
 
-For production operations, review [SECURITY.md](SECURITY.md), run the paper/shadow gates, and use `deploy/backup.sh` for Supabase Postgres backups. The frontend overview includes an autonomous-readiness summary showing decisions, resolved outcomes, win rate, data quality, sample progress and live blockers.
+For production operations, review [SECURITY.md](SECURITY.md) and the [controlled deployment runbook](CONTROLLED_DEPLOYMENT.md), run the paper/shadow gates, and use `deploy/backup.sh` for Supabase Postgres backups. The frontend overview includes an autonomous-readiness summary showing decisions, resolved outcomes, win rate, data quality, sample progress and live blockers.
+
+## Verification and release gates
+
+The verification suite is intentionally conservative. Run the static/unit
+tests with:
+
+```bash
+cd backend
+python -m pytest -q -m 'not integration'
+```
+
+Database, concurrency, migration, fault-injection, and controlled-account
+tests require an explicit disposable test database:
+
+```bash
+export VESPER_RUN_DB_TESTS=1
+export VESPER_TEST_DATABASE_URL='postgresql://.../vesper_verification'
+python -m pytest -q
+```
+
+`DATABASE_URL` is never used by these verification fixtures. A Supabase test
+URL additionally requires `VESPER_ALLOW_SUPABASE_TEST_DB=1`. Skipped tests do
+not count as passing release evidence. Use `python backend/tools/release_gate.py`
+to check the required evidence markers for controlled/canary/production
+stages. The gate only reports status; it cannot authorize live trading.
 
 Session-authenticated state-changing requests are origin-checked and API-key/session requests are rate-limited per principal and route. Keep `CORS_ORIGINS` restricted to the deployed frontend origin.
 
@@ -132,4 +157,4 @@ validated against resolved outcomes before any live consideration.
 
 The safe core is implemented: continuous Gamma/CLOB market ingestion, Supabase Postgres persistence, autonomous paper evaluation, automatic terminal resolution, exact quote/book provenance, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, calibration metrics, replay, audit events, Prometheus telemetry, and a readiness dashboard.
 
-Live Polymarket order submission is not complete. It requires authenticated operator credentials, verified signer/funder configuration, allowance checks, idempotent order submission, partial-fill handling, cancellation, venue-state reconciliation, monitoring and explicit production approval. The live adapter therefore fails closed until that integration is completed and tested against a controlled account. Postgres is authoritative and Sibyl is outside the critical learning path.
+The live execution foundation is implemented behind a fail-closed service boundary. It includes authenticated CLOB-client integration, signer/funder and balance/allowance readiness checks, deterministic idempotent client order IDs, durable submission attempts, partial-fill reconciliation, cancellation, bounded retry policy, venue circuit breakers, account snapshots, and a durable emergency kill switch. The integration remains disabled until the operator configures a controlled account, completes the controlled-account test suite, and passes the statistical, wallet, venue-health, reconciliation, and approval gates. Postgres is authoritative and Sibyl is outside the critical learning path.

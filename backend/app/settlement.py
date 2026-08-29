@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 from .engines import ScarEngine
@@ -27,22 +28,83 @@ def settle_decision(
     if decision.outcome != "pending":
         return decision
 
+    # Live settlement is derived from immutable fills, never from mutable
+    # decision/order aggregates supplied by an API caller or old projection.
+    # A Polymarket source is also used for paper/shadow observations.  Only a
+    # live-mode decision has venue execution obligations; source provenance
+    # must never turn a paper decision into an unresolved live settlement.
+    live_execution = decision.mode.value == "live"
+    fill_totals = None
+    if live_execution:
+        if not decision.order_id or resolved_yes is None or not decision.execution_reconciled:
+            raise ValueError("live settlement requires a reconciled order and terminal resolution")
+        with memory.db.connection() as c:
+            order_row=c.execute("SELECT status,filled_size,filled_notional,filled_fees,average_fill_price FROM orders WHERE id=%s FOR SHARE",(decision.order_id,)).fetchone()
+            if not order_row or order_row['status'] not in ('filled','canceled','expired','rejected','failed'):
+                raise ValueError("live settlement requires a terminal order")
+            fill_totals = c.execute("""
+                SELECT COALESCE(SUM(quantity),0) AS quantity,
+                       COALESCE(SUM(quantity*price),0) AS notional,
+                       COALESCE(SUM(fee),0) AS fees
+                FROM execution_fills WHERE order_id=%s
+            """, (decision.order_id,)).fetchone()
+        quantity=Decimal(str(fill_totals['quantity'] or 0))
+        notional=Decimal(str(fill_totals['notional'] or 0))
+        fees=Decimal(str(fill_totals['fees'] or 0))
+        if quantity <= 0 or notional < 0 or fees < 0:
+            raise ValueError("live settlement requires immutable fill records")
+        average=notional/quantity
+        if abs(float(order_row['filled_size'] or 0)-float(quantity))>1e-9 or abs(float(order_row['filled_notional'] or 0)-float(notional))>1e-8 or abs(float(order_row['filled_fees'] or 0)-float(fees))>1e-8:
+            raise ValueError("live settlement requires order projection to match immutable fills")
+        if order_row['average_fill_price'] is not None and abs(float(order_row['average_fill_price'])-float(average))>1e-8:
+            raise ValueError("live settlement requires weighted average fill price")
+        won=resolved_yes == (decision.side == "YES")
+        realized=(quantity*(Decimal(1)-average) if won else -quantity*average)-fees
+        pnl=float(realized)
+        decision.executed_size=float(quantity)
+        decision.executed_notional=float(notional)
+        decision.executed_fees=float(fees)
+        decision.executed_average_price=float(average)
+        decision.execution_reconciled=True
+
     decision.outcome = outcome
     decision.pnl = pnl
     decision.clv = clv
     decision.resolved_yes = resolved_yes
     decision.resolved_at = now_iso()
+    decision.market_context = {**(decision.market_context or {}), 'resolution_source': source, 'resolution_verified': True}
 
-    with memory.portfolio_lock() as portfolio_connection:
-        hot = memory.hot()
+    with memory.decision_lock(decision.id):
+      with memory.portfolio_lock() as portfolio_connection:
+        hot = memory.hot_for_update(portfolio_connection)
         hot.daily_pnl += pnl
         hot.weekly_pnl += pnl
-        effective_exposure=decision.size*decision.paper_fill_fraction
+        if decision.execution_reconciled:
+            effective_exposure=float(decision.executed_notional or 0)+float(decision.executed_fees or 0)
+        else:
+            paper_price=decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
+            effective_exposure=decision.size*decision.paper_fill_fraction*paper_price+float((decision.market_context or {}).get('fee_rate',0) or 0)*decision.size*decision.paper_fill_fraction
         hot.portfolio_heat = max(0, hot.portfolio_heat - effective_exposure)
         hot.open_risk = max(0, hot.open_risk - effective_exposure)
         trust = hot.trust.get(decision.strategy_id, 0.5)
         hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
         memory.save_settlement_state(decision,hot,portfolio_connection)
+        reservation_count=memory.settle_reservations(decision.id,portfolio_connection)
+        if live_execution and reservation_count == 0:
+            raise ValueError("live settlement requires a capital reservation")
+        # Settlement is also an append-only execution-ledger event. The
+        # idempotency key makes retries harmless while preserving the
+        # financial event history independently of mutable decision rows.
+        entry_cost=float(fill_totals['notional']) if fill_totals is not None else float(max(0, decision.executed_notional or effective_exposure*(decision.executed_average_price or decision.paper_execution_price or decision.executable_price or decision.price)))
+        gross_proceeds=float((fill_totals['quantity'] if fill_totals is not None else effective_exposure) if (resolved_yes == (decision.side == 'YES')) else 0)
+        portfolio_connection.execute("""INSERT INTO execution_ledger
+                (event_id,idempotency_key,decision_id,event_type,quantity,notional,fee,entry_cost,gross_proceeds,realized_pnl,cash_delta,payload,observed_at)
+                VALUES(%s,%s,%s,'settlement',%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                ON CONFLICT(idempotency_key) DO NOTHING""",
+                ('ledger_settle_'+decision.id, 'settlement:'+decision.id, decision.id,
+                 float(decision.executed_size if decision.execution_reconciled else effective_exposure), entry_cost,
+                 float(getattr(decision,'executed_fees',0) or 0), entry_cost, gross_proceeds, float(pnl), float(pnl),
+                 memory.db.json({'outcome':outcome,'resolved_yes':resolved_yes,'source':source})))
 
     measured_process_score=max(0.0,min(1.0,process_score if process_score is not None else (1.0 if pnl>0 and evidence_complete else .5 if evidence_complete else .25)))
     snapshot = metrics.outcome(decision, pnl, clv, measured_process_score, resolved_yes)
@@ -118,9 +180,15 @@ def parse_terminal_resolution(market: dict[str, Any]) -> bool | None:
 
 
 def contract_pnl(decision: DecisionRecord, resolved_yes: bool) -> tuple[str, float] | None:
-    if decision.size <= 0 or decision.side not in ("YES", "NO"):
+    if decision.mode.value == 'live' and not decision.execution_reconciled:
+        return None
+    executed_size=decision.executed_size if decision.execution_reconciled else decision.size*decision.paper_fill_fraction
+    if executed_size <= 0 or decision.side not in ("YES", "NO"):
         return None
     won = resolved_yes == (decision.side == "YES")
-    price = decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
-    size=decision.size*decision.paper_fill_fraction
-    return ("win" if won else "loss", size * (1 - price) if won else -size * price)
+    price = decision.executed_average_price if decision.executed_average_price is not None else decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
+    if decision.execution_reconciled and decision.executed_average_price is None:
+        return None
+    size=executed_size
+    fee=float(getattr(decision,'executed_fees',0) or 0) if decision.execution_reconciled else 0.0
+    return ("win" if won else "loss", (size * (1 - price) if won else -size * price)-fee)

@@ -13,7 +13,7 @@ services:
     cpus: 1.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD","python","-c","import json,urllib.request; response=urllib.request.urlopen('http://localhost:8000/ready'); payload=json.load(response); raise SystemExit(0 if payload.get('ready') else 1)"]
+      test: ["CMD-SHELL", "python -c \"import json,urllib.request; response=urllib.request.urlopen('http://localhost:8000/ready', timeout=4); payload=json.load(response); raise SystemExit(0 if payload.get('ready') else 1)\""]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -33,9 +33,31 @@ services:
     restart: unless-stopped
     depends_on:
       trading:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"from app.ingestion import IngestionStore; IngestionStore().status()\""]
+      test: ["CMD", "python", "-m", "app.worker", "--healthcheck"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+  reconciler:
+    build: .
+    command: ["python","-m","app.reconciliation"]
+    env_file:
+      - path: .env
+        required: false
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    restart: unless-stopped
+    depends_on:
+      trading:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.reconciliation", "--healthcheck"]
       interval: 60s
       timeout: 10s
       retries: 3

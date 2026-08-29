@@ -3,7 +3,9 @@ from .models import ProcessSnapshot,DecisionRecord,now_iso
 class MetricsEngine:
  def __init__(self,memory):self.memory=memory
  def outcome(self,d, pnl, clv, quality=1.0, resolved_yes=None):
-  key=f'{d.strategy_id}:{d.market_id}:{d.regime}:{d.model_version or "none"}'
+  # Process snapshots are intentionally aggregated at strategy/market-type/
+  # regime/model granularity; keep the durable key aligned with that lookup.
+  key=f'{d.strategy_id}:{d.market_type}:{d.regime}:{d.model_version or "none"}'
   existing=next((x for x in self.memory.snapshots() if x.strategy_id==d.strategy_id and x.market_type==d.market_type and x.regime==d.regime and x.model_version==d.model_version),None) or ProcessSnapshot(strategy_id=d.strategy_id,market_type=d.market_type,regime=d.regime,model_version=d.model_version)
   prior=existing.decisions;existing.decisions+=1;existing.wins+=1 if pnl>0 else 0;existing.pnl+=pnl;existing.clv_sum+=clv;existing.gross_profit+=max(0,pnl);existing.gross_loss+=abs(min(0,pnl));existing.profit_factor=existing.gross_profit/existing.gross_loss if existing.gross_loss else existing.gross_profit;existing.expectancy=existing.pnl/max(1,existing.decisions);existing.decision_quality=(existing.decision_quality*prior+quality)/existing.decisions;existing.rule_adherence=(existing.rule_adherence*prior+(1 if d.gates and 'all_risk_gates_passed' in d.gates else 0))/existing.decisions
   if resolved_yes is not None:

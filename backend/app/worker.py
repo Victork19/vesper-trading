@@ -1,8 +1,9 @@
-import json,os,time,logging,signal,threading
+import json,os,time,logging,signal,threading,uuid,sys
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime,timedelta,timezone
 from .ingestion import IngestionRunner
-from .models import DecisionRequest,Mode
-from .fast_probability import FastMarketProbability
+from .models import DecisionRequest,Mode,OrderStatus,OrderRecord
+from .fast_probability import FastMarketProbability,market_asset
 from .market_policy import fast_markets_only,fast_max_resolution_hours,fast_market_allowed
 from .observability import telemetry
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'));log=logging.getLogger('vesper.pipeline')
@@ -19,8 +20,151 @@ def _duration_bucket(hours):
 def _fast_max_hours():
  return fast_max_resolution_hours()
 
+def _generic_market_baseline(memory,market_input):
+ cutoff=market_input.observed_at or datetime.now(timezone.utc);outcomes=[]
+ for d in memory.decisions():
+  if d.market_type!=market_input.market_type or d.resolved_yes is None or d.outcome in ('pending','void'):continue
+  try:
+   created=datetime.fromisoformat(str(d.created_at).replace('Z','+00:00'));resolved=datetime.fromisoformat(str(d.resolved_at).replace('Z','+00:00')) if d.resolved_at else None
+   if resolved is None or created>=cutoff or resolved>cutoff:continue
+  except (TypeError,ValueError):continue
+  outcomes.append(1 if d.resolved_yes else 0)
+ samples=len(outcomes);empirical=sum(outcomes)/samples if samples else market_input.price;weight=min(.55,samples/(samples+60));probability=max(.01,min(.99,market_input.price*(1-weight)+empirical*weight));uncertainty=max(.12,min(.49,.45/(max(1,samples)**.5)))
+ return {'model_version':'market_baseline_v2','raw_probability':market_input.price,'probability':probability,'lower_bound':max(.01,probability-uncertainty),'upper_bound':min(.99,probability+uncertainty),'uncertainty':uncertainty,'calibration_samples':samples,'calibration_status':'usable' if samples>=20 else 'warming','regime':'baseline','asset':'market','direction':'market'}
+
 def _failure_backoff_seconds(base_interval,failure_streak,max_backoff=900):
  return min(max(1,float(max_backoff)),max(1,float(base_interval))*(2**min(10,max(0,int(failure_streak)))))
+
+_TERMINAL_ORDER_STATES={'filled','canceled','expired','rejected','failed'}
+
+def _lease_owner(): return f'worker_{os.getpid()}_{uuid.uuid4().hex[:10]}'
+
+def acquire_reconciliation_lease(memory, order_id, owner, ttl_seconds=None):
+ """Claim one order for one reconciler, atomically and crash-safely."""
+ ttl=max(1,float(ttl_seconds or os.getenv('RECONCILIATION_LEASE_SECONDS','30')))
+ with memory.db.connection() as c:
+  row=c.execute("""INSERT INTO reconciliation_leases(order_id,lease_owner,lease_expires_at,started_at,attempt_count,updated_at)
+      VALUES(%s,%s,NOW()+(%s * INTERVAL '1 second'),NOW(),1,NOW())
+      ON CONFLICT(order_id) DO UPDATE SET lease_owner=EXCLUDED.lease_owner,
+        lease_expires_at=EXCLUDED.lease_expires_at,started_at=NOW(),
+        attempt_count=reconciliation_leases.attempt_count+1,updated_at=NOW()
+      WHERE reconciliation_leases.lease_expires_at<NOW() OR reconciliation_leases.lease_owner=%s
+      RETURNING order_id""",(order_id,owner,ttl,owner)).fetchone()
+ return bool(row)
+
+def finish_reconciliation_lease(memory, order_id, owner, success=True, error=None, status=None):
+ with memory.db.connection() as c:
+  c.execute("""UPDATE reconciliation_leases SET lease_expires_at=NOW(),last_success_at=CASE WHEN %s THEN NOW() ELSE last_success_at END,
+      consecutive_failures=CASE WHEN %s THEN 0 ELSE consecutive_failures+1 END,last_error=%s,last_order_status=%s,updated_at=NOW()
+      WHERE order_id=%s AND lease_owner=%s""",(success,success,error,status,order_id,owner))
+
+def _deadline_call(fn, *args, timeout=None):
+ """Bound a venue operation so a stuck SDK call cannot wedge reconciliation."""
+ seconds=max(.1,float(timeout or os.getenv('VENUE_OPERATION_TIMEOUT_SECONDS','15')))
+ executor=ThreadPoolExecutor(max_workers=1)
+ future=executor.submit(fn,*args)
+ try:return future.result(timeout=seconds)
+ except FutureTimeout as exc:
+  future.cancel();raise TimeoutError(f'venue operation exceeded {seconds:.1f}s deadline') from exc
+ finally:
+  executor.shutdown(wait=False,cancel_futures=True)
+
+def _atomic_apply_reconciliation(memory, order, result):
+ """Persist order, decision projection, and exposure delta under one lock.
+
+ The venue result is never applied using the caller's stale `order` object.
+ The row is re-read under the portfolio advisory lock, so concurrent
+ reconciliation cannot double-count heat or regress a fill.
+ """
+ status=result.get('status')
+ if status not in {x.value for x in OrderStatus}:raise ValueError(f'unknown reconciliation status: {status}')
+ new_filled=float(result.get('filled_size',0) or 0);new_notional=float(result.get('filled_notional',0) or 0);new_fees=float(result.get('filled_fees',0) or 0);new_price=result.get('average_fill_price')
+ with memory.db.connection() as c:
+  c.execute("SELECT pg_advisory_xact_lock(hashtext('vesper-portfolio-exposure'))")
+  current=c.execute('SELECT * FROM orders WHERE id=%s FOR UPDATE',(order.id,)).fetchone()
+  if not current:return False
+  old_filled=float(current['filled_size'] or 0);old_notional=float(current.get('filled_notional',0) or 0);old_fees=float(current.get('filled_fees',0) or 0)
+  if new_filled+1e-12<old_filled:raise ValueError('reconciliation fill quantity regressed')
+  if new_notional+1e-9<old_notional or new_fees+1e-9<old_fees:raise ValueError('reconciliation fill economics regressed')
+  if new_filled>float(current['requested_size'])+1e-12:raise ValueError('reconciliation fill exceeds requested size')
+  if new_filled>1e-12 and new_notional<0:raise ValueError('reconciliation notional cannot be negative')
+  if new_filled>1e-12 and new_price is not None and abs(float(new_price)-new_notional/new_filled)>1e-8:raise ValueError('average fill price is not weighted from immutable fills')
+  if current['status'] in _TERMINAL_ORDER_STATES and (abs(new_filled-old_filled)>1e-12 or abs(new_notional-old_notional)>1e-9 or abs(new_fees-old_fees)>1e-9):raise ValueError('terminal order fill state is immutable')
+  c.execute("""UPDATE orders SET status=%s,filled_size=%s,filled_notional=%s,filled_fees=%s,average_fill_price=%s,error=NULL,updated_at=NOW() WHERE id=%s""",(status,new_filled,new_notional,new_fees,new_price,order.id))
+  if status in _TERMINAL_ORDER_STATES:
+   c.execute("UPDATE execution_attempts SET status=%s WHERE client_order_id=%s AND action='intent' AND status NOT IN ('failed','rejected','canceled')",(status,order.client_order_id))
+  delta=(new_notional+new_fees)-(old_notional+old_fees)
+  if abs(delta)>1e-12:
+   hotrow=c.execute("SELECT value FROM memory WHERE tier='HOT' AND key='state' FOR UPDATE").fetchone()
+   if hotrow:
+    hot=json.loads(hotrow['value']) if isinstance(hotrow['value'],str) else dict(hotrow['value'])
+    hot['portfolio_heat']=max(0.0,float(hot.get('portfolio_heat',0))+delta)
+    hot['open_risk']=max(0.0,float(hot.get('open_risk',0))+delta)
+    c.execute("UPDATE memory SET value=%s,updated_at=NOW() WHERE tier='HOT' AND key='state'",(memory.db.json(hot),))
+  decision_row=c.execute("SELECT value FROM memory WHERE tier='COLD' AND key=%s FOR UPDATE",(order.decision_id,)).fetchone()
+  if decision_row:
+   data=json.loads(decision_row['value']) if isinstance(decision_row['value'],str) else dict(decision_row['value'])
+   data.update(executed_size=new_filled,executed_notional=new_notional,executed_fees=new_fees,executed_average_price=new_price,execution_reconciled=status in _TERMINAL_ORDER_STATES)
+   c.execute("UPDATE memory SET value=%s,updated_at=NOW() WHERE tier='COLD' AND key=%s",(memory.db.json(data),order.decision_id))
+ return True
+
+def reconcile_live_orders(memory, service, owner=None):
+ """Reconcile every non-terminal live order and release unfilled reserves."""
+ checked=updated=errors=0
+ owner=owner or _lease_owner()
+ terminal={x.value for x in OrderStatus if x.value in ('filled','canceled','expired','rejected','failed')}
+ for order in memory.orders():
+  if order.mode.value!='live' or order.status.value in terminal or not order.venue_order_id: continue
+  if not acquire_reconciliation_lease(memory,order.id,owner):continue
+  checked+=1
+  try:
+   result=_deadline_call(service.reconcile,order,timeout=os.getenv('VENUE_OPERATION_TIMEOUT_SECONDS','15'));status=result.get('status')
+   if status in {x.value for x in OrderStatus}:
+    if _atomic_apply_reconciliation(memory,order,result):updated+=1
+    finish_reconciliation_lease(memory,order.id,owner,True,status=status)
+   else:errors+=1;finish_reconciliation_lease(memory,order.id,owner,False,'invalid reconciliation result',status=status)
+  except Exception as exc:
+   errors+=1;finish_reconciliation_lease(memory,order.id,owner,False,str(exc),status='reconciliation_required');log.warning('order reconciliation failed order=%s: %s',order.id,exc)
+ telemetry.set('vesper_live_orders_checked',checked);telemetry.set('vesper_live_orders_reconciled',updated);telemetry.set('vesper_live_orders_reconciliation_errors',errors)
+ return {'checked':checked,'updated':updated,'errors':errors}
+
+def recover_submission_intents(memory, service=None):
+ """Promote venue acknowledgements persisted before an API crash into orders."""
+ recovered=0
+ with memory.db.connection() as c:
+  rows=c.execute("""SELECT i.decision_id,i.client_order_id,i.request,i.response,i.status
+      FROM execution_attempts i LEFT JOIN orders o ON o.client_order_id=i.client_order_id
+      WHERE i.action='intent' AND i.status IN ('pending','uncertain','accepted','filled','partially_filled','reconciliation_required') AND o.id IS NULL""").fetchall()
+ for row in rows:
+  request=row['request'] or {};response=row['response'] or {};status=response.get('status',row['status'])
+  if service and row['status'] in ('pending','uncertain'):
+   recovered_result=service.recover_submission_intent(row['client_order_id'])
+   if recovered_result and recovered_result.get('venue_order_id'):
+    response=recovered_result.get('response',recovered_result);status=recovered_result.get('status','accepted')
+    with memory.db.connection() as c:c.execute("UPDATE execution_attempts SET status=%s,response=%s,error=NULL WHERE decision_id=%s AND client_order_id=%s AND attempt=-1 AND action='intent'",(status,memory.db.json(response),row['decision_id'],row['client_order_id']))
+   else: continue
+  if status not in {x.value for x in OrderStatus}: status='accepted'
+  try:
+   order=OrderRecord(id='recovered_'+str(row['client_order_id'])[-32:],client_order_id=row['client_order_id'],decision_id=row['decision_id'],mode=Mode.LIVE,market_id=str(request.get('market_id','unknown')),side=str(request.get('side','UNKNOWN')),requested_size=float(request.get('size',0)),limit_price=float(request.get('price',0)),status=OrderStatus(status),filled_size=float(response.get('filled_size',0) or 0),filled_notional=float(response.get('filled_notional',0) or 0),filled_fees=float(response.get('filled_fees',0) or 0),average_fill_price=response.get('average_fill_price'),venue_order_id=response.get('venue_order_id') or response.get('id'))
+   memory.save_order(order)
+   if service:
+    if isinstance(response.get('fills'),list) and response.get('fills'):
+     service._ingest_fills(order,response)
+     totals=service._fill_totals(order)
+     order.filled_size=float(totals['quantity'] or 0)
+     order.filled_notional=float(totals['notional'] or 0)
+     order.filled_fees=float(totals['fees'] or 0)
+     order.average_fill_price=order.filled_notional/order.filled_size if order.filled_size else None
+     memory.save_order(order)
+    reservation_state='partially_filled' if order.status==OrderStatus.PARTIALLY_FILLED else 'submitted' if order.status in (OrderStatus.ACCEPTED,OrderStatus.UNKNOWN) else order.status.value
+    service.update_reservation(order.client_order_id,reservation_state,order.filled_notional+order.filled_fees,order.id)
+   decision=next((item for item in memory.decisions() if item.id==order.decision_id),None)
+   if decision:
+    decision.executed_size=order.filled_size;decision.executed_notional=order.filled_notional;decision.executed_fees=order.filled_fees;decision.executed_average_price=order.average_fill_price;decision.execution_reconciled=order.status in _TERMINAL_ORDER_STATES
+    memory.save_decision(decision)
+   recovered+=1
+  except Exception: continue
+ telemetry.set('vesper_recovered_submission_intents',recovered);return recovered
 
 def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
  enabled=os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true'
@@ -52,10 +196,13 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
   hours=(end_time-now).total_seconds()/3600
   if hours<min_hours or hours>max_hours:
    horizon_skipped+=1;continue
-  ranked.append((hours,item))
+  # Model-backed crypto markets get first look, while generic fast markets
+  # remain in the candidate pool for baseline learning and future models.
+  ranked.append((0 if market_asset(item.get('question')) else 1,hours,item))
  candidate_count=len(ranked);ranked.sort(key=lambda pair:pair[0],reverse=not prefer_fast)
  telemetry.set('vesper_autonomous_paper_candidate_count',candidate_count);telemetry.set('vesper_autonomous_paper_horizon_skipped',horizon_skipped);telemetry.set('vesper_autonomous_paper_min_resolution_hours',min_hours);telemetry.set('vesper_autonomous_paper_max_resolution_hours',max_hours);telemetry.set('vesper_autonomous_paper_fast_only',int(fast_only));telemetry.set('vesper_autonomous_paper_fast_max_hours',fast_max)
- for hours,item in ranked:
+ ranked.sort(key=lambda pair:(pair[0],pair[1] if prefer_fast else -pair[1]))
+ for priority,hours,item in ranked:
   if evaluated>=limit:break
   market_id=str(item.get('id') or item.get('conditionId') or '');market_type=str(item.get('category') or 'unknown')
   selection_type=f'{market_type}:{_duration_bucket(hours)}'
@@ -78,9 +225,14 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
   else:model=None
   if model is not None:
    telemetry.inc('vesper_fast_model_estimates_total',labels={'model_version':model['model_version'],'asset':model['asset']})
-   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_probability=model['probability'];market_input.model_version=model['model_version'];market_input.model_lower_bound=model['lower_bound'];market_input.model_upper_bound=model['upper_bound'];market_input.model_uncertainty=model['uncertainty'];market_input.model_calibration_samples=model['calibration_samples'];market_input.model_calibration_status=model['calibration_status'];market_input.regime=model['regime'];market_input.signals={'fast_model':model['probability']};telemetry.set('vesper_fast_model_uncertainty',model['uncertainty']);telemetry.inc('vesper_fast_model_regime_total',labels={'regime':model['regime']})
+   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_probability=model['probability'];market_input.model_version=model['model_version'];market_input.model_provenance={'provider':'vesper_fast_model','version':model['model_version'],'asset':model.get('asset'),'regime':model.get('regime'),'calibration_samples':model.get('calibration_samples',0),'observed_at':market_input.observed_at.isoformat() if market_input.observed_at else None};market_input.model_lower_bound=model['lower_bound'];market_input.model_upper_bound=model['upper_bound'];market_input.model_uncertainty=model['uncertainty'];market_input.model_calibration_samples=model['calibration_samples'];market_input.model_calibration_status=model['calibration_status'];market_input.regime=model['regime'];market_input.signals={'fast_model':model['probability']};telemetry.set('vesper_fast_model_uncertainty',model['uncertainty']);telemetry.inc('vesper_fast_model_regime_total',labels={'regime':model['regime']})
   elif reference is not None:market_input.reference_rate=max(0,min(1,reference))
-  else:skipped+=1;telemetry.inc('vesper_fast_model_unavailable_total');log.info('autonomous paper skipped market=%s reason=fast_model_unavailable',market_id);continue
+  else:
+   # Keep broad fast-market discovery useful even when no asset-specific
+   # feed/model exists. This is a market-price baseline, not an independent
+   # edge; historical calibration must create the edge before sizing.
+   model=_generic_market_baseline(memory,market_input)
+   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_probability=model['probability'];market_input.model_version=model['model_version'];market_input.model_provenance={'provider':'market_baseline','version':model['model_version'],'calibration_samples':model.get('calibration_samples',0),'observed_at':market_input.observed_at.isoformat() if market_input.observed_at else None};market_input.model_lower_bound=model['lower_bound'];market_input.model_upper_bound=model['upper_bound'];market_input.model_uncertainty=model['uncertainty'];market_input.model_calibration_samples=model['calibration_samples'];market_input.model_calibration_status=model['calibration_status'];telemetry.inc('vesper_generic_market_baseline_total');log.info('autonomous paper using market baseline market=%s',market_id)
   request=DecisionRequest(market=market_input,strategy_id=os.getenv('AUTO_PAPER_STRATEGY','reference_class'),execute=True,evidence_complete=True)
   try:decision=decide_fn(request,None)
   except Exception as exc:skipped+=1;log.warning('autonomous paper evaluation failed market=%s error=%s',market_id,exc);continue
@@ -91,7 +243,11 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
  return {'enabled':True,'evaluated':evaluated,'traded':traded,'skipped':skipped,'horizon_skipped':horizon_skipped,'candidates':candidate_count,'min_resolution_hours':min_hours,'max_resolution_hours':max_hours,'fast_only':fast_only,'fast_max_hours':fast_max}
 
 def run():
- runner=IngestionRunner();fast_model=FastMarketProbability();interval=max(1,int(os.getenv('PIPELINE_INTERVAL_SECONDS','60')));max_backoff=max(interval,float(os.getenv('PIPELINE_MAX_BACKOFF_SECONDS','900')));failure_streak=0;stop=threading.Event();from .main import decide,memory,markets as api_markets
+ if '--healthcheck' in sys.argv:
+  from .ingestion import IngestionStore
+  if IngestionStore().worker_health().get('stale',True):raise SystemExit(1)
+  return
+ runner=IngestionRunner();fast_model=FastMarketProbability();interval=max(1,int(os.getenv('PIPELINE_INTERVAL_SECONDS','60')));max_backoff=max(interval,float(os.getenv('PIPELINE_MAX_BACKOFF_SECONDS','900')));failure_streak=0;stop=threading.Event();from .main import decide,memory,markets as api_markets,runtime_config
  def request_stop(signum,frame):
   log.info('pipeline shutdown requested signal=%s',signum);stop.set()
  for signal_name in (signal.SIGINT,signal.SIGTERM):signal.signal(signal_name,request_stop)
@@ -99,6 +255,7 @@ def run():
  try:
   while not stop.is_set():
    try:
+    values=runtime_config.sync_process();interval=max(1,int(values.get('PIPELINE_INTERVAL_SECONDS',interval)));max_backoff=max(interval,float(values.get('PIPELINE_MAX_BACKOFF_SECONDS',max_backoff)))
     result=runner.tick(max(1,int(os.getenv('INGEST_MARKET_LIMIT','50'))));auto=autonomous_paper_cycle(runner,memory,decide,fast_model);failure_streak=0;log.info('ingestion tick %s autonomous_paper=%s',result,auto)
    except Exception as exc:
     failure_streak=min(10,failure_streak+1)

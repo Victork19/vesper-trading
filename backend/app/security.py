@@ -10,7 +10,7 @@ class Principal:
 class SecurityManager:
  def __init__(self,settings,database=None):
   self.settings=settings;self.db=database;self.lock=threading.RLock();self.keys={};self.windows=defaultdict(deque);self.rate_limit=max(10,int(os.getenv('VESPER_RATE_LIMIT_PER_MINUTE','120')))
-  self._add('client',settings.api_key,'trade');self._add('admin',settings.admin_key,'admin');self._add('reader',os.getenv('VESPER_READ_KEY',''),'read');self._load_persisted_keys()
+  self._add('client',settings.api_key,'trade');self._add('admin',settings.admin_key,'admin');self._add('reader',os.getenv('VESPER_READ_KEY',''),'read');self._add('operator',os.getenv('VESPER_OPERATOR_KEY',''),'operator');self._add('settlement',os.getenv('VESPER_SETTLEMENT_KEY',''),'settlement_admin');self._add('risk',os.getenv('VESPER_RISK_KEY',''),'risk_admin');self._load_persisted_keys()
  def _hash(self,key):return hashlib.sha256(key.encode()).hexdigest()
  def _add(self,key_id,key,scope):
   if not key:return
@@ -46,7 +46,11 @@ class SecurityManager:
   if not key:raise HTTPException(401,'Missing X-Vesper-Key')
   record=self._record(key)
   if not record:raise HTTPException(401,'Invalid API key')
-  key_id,scope=record;allowed=scope=='admin' or scope==required or (required=='read' and scope=='trade')
+  key_id,scope=record
+  # Scopes are deliberately non-transitive.  In particular, risk personnel
+  # must not gain operational authority, and trade credentials must never be
+  # accepted for cancellation, halt, or release actions.
+  allowed=scope=='admin' or scope==required or (required=='read' and scope in {'trade','operator','settlement_admin','risk_admin'})
   if not allowed:raise HTTPException(403,'Insufficient API scope')
   return Principal(key_id,scope)
  def check_rate(self,key_id,route):
@@ -81,11 +85,18 @@ class SecurityManager:
   principal=self.authenticate(key,'read')
   secret=self.settings.session_secret
   if not secret: raise HTTPException(503,'Session authentication is not configured')
-  expires=int(time.time())+int(ttl or self.settings.session_ttl_seconds)
+  requested_ttl=int(ttl or self.settings.session_ttl_seconds)
+  if principal.scope in {'admin','operator','settlement_admin','risk_admin'}:
+   requested_ttl=min(requested_ttl,int(getattr(self.settings,'privileged_session_ttl_seconds',900)))
+  expires=int(time.time())+max(60,requested_ttl)
   payload={'sid':'sess_'+secrets.token_urlsafe(18),'key_id':principal.key_id,'scope':principal.scope,'exp':expires}
+  payload['csrf']=secrets.token_urlsafe(24)
   encoded=base64.urlsafe_b64encode(json.dumps(payload,separators=(',',':')).encode()).decode().rstrip('=')
   signature=hmac.new(secret.encode(),encoded.encode(),hashlib.sha256).digest()
-  return encoded+'.'+base64.urlsafe_b64encode(signature).decode().rstrip('='),payload
+  token=encoded+'.'+base64.urlsafe_b64encode(signature).decode().rstrip('=')
+  if self.db:
+   with self.db.connection() as c:c.execute('INSERT INTO security_sessions(session_id,token_digest,key_id,scope,csrf_digest,expires_at) VALUES(%s,%s,%s,%s,%s,to_timestamp(%s))',(payload['sid'],self._hash(token),principal.key_id,principal.scope,self._hash(payload['csrf']),expires))
+  return token,payload
  def authenticate_session(self,token,required='read'):
   if not token: raise HTTPException(401,'Missing session')
   secret=self.settings.session_secret
@@ -98,7 +109,31 @@ class SecurityManager:
    if int(payload.get('exp',0))<int(time.time()): raise ValueError('expired')
    scope=str(payload.get('scope',''));key_id=str(payload.get('key_id','session'))
    if not self._active_key_id(key_id): raise HTTPException(401,'Session key has been revoked')
-   if not (scope=='admin' or scope==required or (required=='read' and scope=='trade')): raise HTTPException(403,'Insufficient session scope')
+   if self.db:
+    with self.db.connection() as c:
+     idle=int(getattr(self.settings,'session_idle_seconds',900))
+     active=c.execute("SELECT 1 FROM security_sessions WHERE session_id=%s AND token_digest=%s AND revoked_at IS NULL AND expires_at>NOW() AND last_seen_at>NOW()-(%s * interval '1 second')",(payload.get('sid'),self._hash(token),idle)).fetchone()
+     if not active:raise HTTPException(401,'Session is revoked or expired')
+     c.execute('UPDATE security_sessions SET last_seen_at=NOW() WHERE session_id=%s',(payload.get('sid'),))
+   if not (scope=='admin' or scope==required or (required=='read' and scope in {'trade','operator','settlement_admin','risk_admin'})): raise HTTPException(403,'Insufficient session scope')
    return Principal(key_id,scope)
   except HTTPException: raise
   except Exception: raise HTTPException(401,'Invalid or expired session')
+ def revoke_session(self,token):
+  if not token or not self.db:return False
+  with self.db.connection() as c:return c.execute('UPDATE security_sessions SET revoked_at=NOW() WHERE token_digest=%s AND revoked_at IS NULL',(self._hash(token),)).rowcount>0
+
+ def validate_session_csrf(self,token,csrf):
+  """Validate a CSRF token against the authenticated session record.
+
+  Matching a readable cookie to a header is insufficient: an attacker who can
+  inject both values must not be able to pair them with another session.
+  """
+  if not token or not csrf: raise HTTPException(403,'csrf_validation_failed')
+  self.authenticate_session(token,'read')
+  if not self.db: raise HTTPException(403,'csrf_session_binding_unavailable')
+  with self.db.connection() as c:
+   row=c.execute("SELECT csrf_digest FROM security_sessions WHERE token_digest=%s AND revoked_at IS NULL AND expires_at>NOW()",(self._hash(token),)).fetchone()
+  if not row or not hmac.compare_digest(str(row['csrf_digest']),self._hash(csrf)):
+   raise HTTPException(403,'csrf_validation_failed')
+  return True

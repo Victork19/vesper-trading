@@ -1,4 +1,5 @@
 import os
+from datetime import datetime,timezone
 
 from .engines import ScarEngine
 from .market_data import PolymarketData
@@ -16,6 +17,22 @@ class OutcomeResolver:
         self.scars = ScarEngine(self.memory)
         self.batch_size = max(1, int(os.getenv("RESOLUTION_BATCH_SIZE", "25")))
         self.enabled = os.getenv("RESOLUTION_ENABLED", "true").lower() == "true"
+        self.retry_base_seconds=max(5,int(os.getenv('RESOLUTION_RETRY_BASE_SECONDS','30')))
+        self.retry_max_seconds=max(self.retry_base_seconds,int(os.getenv('RESOLUTION_RETRY_MAX_SECONDS','900')))
+
+    def _retry_due(self,market_id):
+        with self.memory.db.connection() as c:
+            row=c.execute('SELECT next_retry_at FROM resolution_retries WHERE market_id=%s',(market_id,)).fetchone()
+        return not row or row['next_retry_at']<=datetime.now(timezone.utc)
+
+    def _record_retry(self,market_id,error):
+        with self.memory.db.connection() as c:
+            row=c.execute('SELECT attempts FROM resolution_retries WHERE market_id=%s FOR UPDATE',(market_id,)).fetchone()
+            attempts=(int(row['attempts']) if row else 0)+1;delay=min(self.retry_max_seconds,self.retry_base_seconds*(2**min(10,attempts-1)))
+            c.execute("INSERT INTO resolution_retries(market_id,attempts,next_retry_at,last_error,updated_at) VALUES(%s,%s,now()+(%s*interval '1 second'),%s,now()) ON CONFLICT(market_id) DO UPDATE SET attempts=EXCLUDED.attempts,next_retry_at=EXCLUDED.next_retry_at,last_error=EXCLUDED.last_error,updated_at=EXCLUDED.updated_at",(market_id,attempts,delay,str(error)))
+
+    def _clear_retry(self,market_id):
+        with self.memory.db.connection() as c:c.execute('DELETE FROM resolution_retries WHERE market_id=%s',(market_id,))
 
     def tick(self):
         if not self.enabled:
@@ -30,6 +47,8 @@ class OutcomeResolver:
         market_ids=sorted(by_market, key=lambda market_id:min(d.created_at for d in by_market[market_id]))
         market_cache = {}
         for market_id in market_ids[:self.batch_size]:
+            if not self._retry_due(market_id):
+                continue
             checked += 1
             try:
                 if market_id not in market_cache:
@@ -38,6 +57,7 @@ class OutcomeResolver:
                 resolved_yes = parse_terminal_resolution(market)
                 if resolved_yes is None:
                     unresolved += len(by_market[market_id])
+                    self._record_retry(market_id,'market_not_terminal')
                     continue
                 for decision in by_market[market_id]:
                     with self.memory.decision_lock(decision.id):
@@ -51,8 +71,10 @@ class OutcomeResolver:
                         outcome, pnl = result
                         settle_decision(self.memory,self.metrics,self.scars,current,outcome,pnl,clv=0.0,resolved_yes=resolved_yes,evidence_complete=True,source="polymarket_resolver",resolution={"market_id":market_id,"closed":market.get("closed"),"resolved":market.get("resolved"),"outcomes":market.get("outcomes"),"outcomePrices":market.get("outcomePrices")},process_score=1.0 if outcome=='win' else 0.0)
                         settled += 1
+                self._clear_retry(market_id)
             except Exception as exc:
                 errors += 1
+                self._record_retry(market_id,exc)
                 telemetry.error("outcome_resolution")
                 continue
         telemetry.inc("vesper_resolution_ticks_total")

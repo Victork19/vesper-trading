@@ -55,7 +55,7 @@ class PolymarketData:
   return OrderBook(token_id=str(token_id),observed_at=self._observed_at(raw),bids=bids,asks=asks,best_bid=bids[0].price if bids else None,best_ask=asks[0].price if asks else None,bid_depth=sum(x.size for x in bids),ask_depth=sum(x.size for x in asks),sequence=self._sequence(raw))
  def _observed_at(self,raw):
   value=next((raw.get(key) for key in ('timestamp','updatedAt','updated_at','lastUpdated','last_update') if raw.get(key) not in (None,'')),None)
-  if value is None:return now_iso()
+  if value is None:raise MarketDataError('order book has no venue timestamp')
   try:
    try:timestamp=float(value)
    except (TypeError,ValueError):timestamp=None
@@ -63,7 +63,7 @@ class PolymarketData:
     timestamp=timestamp/1000 if timestamp>100000000000 else timestamp
     return datetime.fromtimestamp(timestamp,timezone.utc).isoformat().replace('+00:00','Z')
    return datetime.fromisoformat(str(value).replace('Z','+00:00')).astimezone(timezone.utc).isoformat().replace('+00:00','Z')
-  except (TypeError,ValueError,OSError):return now_iso()
+  except (TypeError,ValueError,OSError):raise MarketDataError('order book timestamp is invalid')
  def _sequence(self,raw):
   value=raw.get('sequence') or raw.get('timestamp')
   try:return int(value) if value is not None else None
@@ -96,8 +96,7 @@ class PolymarketData:
     text=str(label).strip().lower()
     if text in ('yes','true'):yes=str(token)
     elif text in ('no','false'):no=str(token)
-  if yes is None and tokens:yes=str(tokens[0])
-  if no is None and len(tokens)>1:no=str(tokens[1])
+  if yes is None or no is None or yes==no:raise MarketDataError('market must provide explicit YES and NO outcome labels')
   return yes,no
  def to_input(self,item,book=None,yes_book=None,no_book=None):
   item=self.validate_market(item);yes_book=yes_book or book;yes_token,no_token=self.token_pair(item);prices=item.get('outcomePrices',[.5])
@@ -112,12 +111,16 @@ class PolymarketData:
   if no_book is not None:no_bid,no_ask=no_book.best_bid,no_book.best_ask
   observed=datetime.now(timezone.utc);quote_book=yes_book or no_book;yes_observed=datetime.fromisoformat(yes_book.observed_at.replace('Z','+00:00')) if yes_book else None;no_observed=datetime.fromisoformat(no_book.observed_at.replace('Z','+00:00')) if no_book else None;quote_times=[value for value in (yes_observed,no_observed) if value is not None];quote_observed=min(quote_times) if quote_times else None;quote_skew=(max(quote_times)-min(quote_times)).total_seconds() if len(quote_times)>1 else 0.0;end_time=self._end_time(item);resolution_hours=max(.001,(end_time-observed).total_seconds()/3600) if end_time else 168
   quality=self.quality(item,quote_book);snapshot_payload={'schema':INPUT_SCHEMA_VERSION,'market':item,'yes_book':yes_book.model_dump() if yes_book else None,'no_book':no_book.model_dump() if no_book else None};snapshot_hash=hashlib.sha256(json.dumps(snapshot_payload,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-  return MarketInput(market_id=str(item.get('id') or item.get('conditionId')),question=str(item.get('question','')),market_type=str(item.get('category') or item.get('eventType') or item.get('marketType') or 'unknown'),price=price,volume_24h=self._number(item.get('volume24hr') or item.get('volume24h')),liquidity=self._number(item.get('liquidity')),resolution_hours=resolution_hours,regime='baseline',source='polymarket-clob' if quote_book else 'polymarket-gamma',model_calibration_status='unavailable',observed_at=observed,quote_observed_at=quote_observed,quality_score=quality.score,snapshot_hash=snapshot_hash,yes_token_id=yes_token,no_token_id=no_token,yes_bid=yes_bid,yes_ask=yes_ask,yes_quote_observed_at=yes_observed,no_bid=no_bid,no_ask=no_ask,no_quote_observed_at=no_observed,quote_skew_seconds=quote_skew,book_bids=yes_book.bids if yes_book else [],book_asks=yes_book.asks if yes_book else [],yes_book_bids=yes_book.bids if yes_book else [],yes_book_asks=yes_book.asks if yes_book else [],no_book_bids=no_book.bids if no_book else [],no_book_asks=no_book.asks if no_book else [],book_sequence=quote_book.sequence if quote_book else None,market_status='active' if item.get('active',True) and not item.get('closed',False) else 'closed',market_end_time=end_time,fee_rate=float(os.getenv('PAPER_FEE_RATE','.02')),slippage_bps=float(os.getenv('PAPER_SLIPPAGE_BPS','10')))
+  raw_volume=item.get('volume24hr') if item.get('volume24hr') not in (None,'') else item.get('volume24h');return MarketInput(market_id=str(item.get('id') or item.get('conditionId')),question=str(item.get('question','')),market_type=str(item.get('category') or item.get('eventType') or item.get('marketType') or 'unknown'),price=price,volume_24h=self._number(raw_volume),volume_known=raw_volume not in (None,''),liquidity=self._number(item.get('liquidity')),resolution_hours=resolution_hours,regime='baseline',source='polymarket-clob' if quote_book else 'polymarket-gamma',model_calibration_status='unavailable',observed_at=observed,quote_observed_at=quote_observed,quality_score=quality.score,snapshot_hash=snapshot_hash,yes_token_id=yes_token,no_token_id=no_token,yes_bid=yes_bid,yes_ask=yes_ask,yes_quote_observed_at=yes_observed,no_bid=no_bid,no_ask=no_ask,no_quote_observed_at=no_observed,quote_skew_seconds=quote_skew,book_bids=yes_book.bids if yes_book else [],book_asks=yes_book.asks if yes_book else [],yes_book_bids=yes_book.bids if yes_book else [],yes_book_asks=yes_book.asks if yes_book else [],no_book_bids=no_book.bids if no_book else [],no_book_asks=no_book.asks if no_book else [],book_sequence=quote_book.sequence if quote_book else None,market_status='active' if item.get('active',True) and not item.get('closed',False) else 'closed',market_end_time=end_time,fee_rate=float(os.getenv('PAPER_FEE_RATE','.02')),slippage_bps=float(os.getenv('PAPER_SLIPPAGE_BPS','10')))
  def quality(self,market,book=None):
-  reasons=[];active=bool(market.get('active',True)) and not bool(market.get('closed',False));liquid=self._number(market.get('liquidity'))>=1000 and self._number(market.get('volume24hr') or market.get('volume24h'))>=5000
+  reasons=[];active=bool(market.get('active',True)) and not bool(market.get('closed',False));liquidity=self._number(market.get('liquidity'));raw_volume=market.get('volume24hr') if market.get('volume24hr') not in (None,'') else market.get('volume24h');volume_known=raw_volume not in (None,'');volume=self._number(raw_volume);liquid=liquidity>=1000 and (not volume_known or volume>=5000);fresh=True
   if not active:reasons.append('market_not_active')
-  if not liquid:reasons.append('insufficient_liquidity')
+  if liquidity<1000 or (volume_known and volume<5000):reasons.append('insufficient_liquidity_or_volume')
   executable=bool(book and book.best_ask is not None and book.best_bid is not None and book.best_bid<book.best_ask)
   if not executable:reasons.append('executable_book_unavailable')
+  if book and book.observed_at:
+   try:fresh=(datetime.now(timezone.utc)-datetime.fromisoformat(str(book.observed_at).replace('Z','+00:00'))).total_seconds()<=max(1,float(os.getenv('MAX_BOOK_AGE_SECONDS','15')))
+   except (TypeError,ValueError):fresh=False
+  if not fresh:reasons.append('stale_order_book')
   score=max(0,1-len(reasons)*.25)
-  return MarketQuality(market_id=str(market.get('id') or market.get('conditionId') or ''),score=score,fresh=True,executable=executable,structurally_valid=True,liquid=liquid,active=active,reasons=reasons,observed_at=now_iso(),source='polymarket')
+  return MarketQuality(market_id=str(market.get('id') or market.get('conditionId') or ''),score=score,fresh=fresh,executable=executable,structurally_valid=True,liquid=liquid,active=active,reasons=reasons,observed_at=now_iso(),source='polymarket')

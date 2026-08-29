@@ -4,6 +4,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY migrations ./migrations
 RUN addgroup --system vesper && adduser --system --ingroup vesper vesper && mkdir -p /app/data && chown -R vesper:vesper /app
 USER vesper
 EXPOSE 8000
