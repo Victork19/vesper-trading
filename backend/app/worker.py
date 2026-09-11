@@ -251,12 +251,16 @@ def run():
  def request_stop(signum,frame):
   log.info('pipeline shutdown requested signal=%s',signum);stop.set()
  for signal_name in (signal.SIGINT,signal.SIGTERM):signal.signal(signal_name,request_stop)
- log.info('pipeline started interval=%ss max_backoff=%ss auto_paper=%s',interval,max_backoff,os.getenv('AUTO_PAPER_ENABLED','true'))
+ cleanup_interval=max(3600,int(os.getenv('RETENTION_CLEANUP_INTERVAL_SECONDS','21600')));last_cleanup=0.0
+ log.info('pipeline started interval=%ss max_backoff=%ss auto_paper=%s retention_cleanup=%ss',interval,max_backoff,os.getenv('AUTO_PAPER_ENABLED','true'),cleanup_interval)
  try:
   while not stop.is_set():
    try:
     values=runtime_config.sync_process();interval=max(1,int(values.get('PIPELINE_INTERVAL_SECONDS',interval)));max_backoff=max(interval,float(values.get('PIPELINE_MAX_BACKOFF_SECONDS',max_backoff)))
-    result=runner.tick(max(1,int(os.getenv('INGEST_MARKET_LIMIT','50'))));auto=autonomous_paper_cycle(runner,memory,decide,fast_model);failure_streak=0;log.info('ingestion tick %s autonomous_paper=%s',result,auto)
+    result=runner.tick(max(1,int(os.getenv('INGEST_MARKET_LIMIT','50'))));auto=autonomous_paper_cycle(runner,memory,decide,fast_model)
+    if time.time()-last_cleanup>=cleanup_interval:
+     cleanup=memory.cleanup_retention();last_cleanup=time.time();telemetry.inc('vesper_retention_cleanups_total');log.info('retention cleanup %s',cleanup)
+    failure_streak=0;log.info('ingestion tick %s autonomous_paper=%s',result,auto)
    except Exception as exc:
     failure_streak=min(10,failure_streak+1)
     try:runner.store.record_heartbeat(error=exc)

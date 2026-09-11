@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from .models import DecisionRecord, OrderRecord, OrderStatus, now_iso
 from .config import settings
+from .eda import insert_canonical_event_json, make_canonical_event
 
 
 class VenueError(RuntimeError):
@@ -339,6 +340,20 @@ class LiveExecutionService:
 
     def set_venue(self, venue): self.venue = venue
 
+    def _eda_event(self, decision_id: str | None, event_type: str, payload: dict[str, Any], source_event_id: str, connection=None):
+        if not decision_id:
+            return
+        def write(c):
+            row = c.execute('SELECT episode_id FROM eda_episodes WHERE decision_id=%s', (decision_id,)).fetchone()
+            if not row:
+                raise VenueError(f'EDA episode missing for decision {decision_id}', category='provenance')
+            event = make_canonical_event('execution', event_type, payload, episode_id=row['episode_id'], source_event_id=source_event_id)
+            event.event_id = 'eda_execution_' + hashlib.sha256(source_event_id.encode()).hexdigest()
+            insert_canonical_event_json(c, self.db, event)
+        if connection is not None: write(connection)
+        else:
+            with self.db.connection() as c: write(c)
+
     def _ledger(self, event_type, idempotency_key, order_id=None, decision_id=None,
                 quantity=0, notional=0, fee=0, payload=None):
         """Append one immutable financial execution event."""
@@ -348,6 +363,7 @@ class LiveExecutionService:
                 VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW()) ON CONFLICT(idempotency_key) DO NOTHING""",
                 ('ledger_'+uuid.uuid4().hex, idempotency_key, order_id, decision_id,
                  event_type, max(0,float(quantity)), max(0,float(notional)), max(0,float(fee)), self.db.json(payload or {})))
+            self._eda_event(decision_id, event_type, payload or {}, idempotency_key, connection=c)
 
     def recover_submission_intent(self, client_order_id: str) -> dict[str, Any] | None:
         """Resolve a pending/uncertain intent without submitting again."""
@@ -453,6 +469,7 @@ class LiveExecutionService:
         with self.db.connection() as c:
             c.execute('INSERT INTO execution_attempts(decision_id,client_order_id,attempt,action,status,request,response,error,created_at) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,NOW()) ON CONFLICT(decision_id,attempt,action) DO UPDATE SET status=EXCLUDED.status,response=EXCLUDED.response,error=EXCLUDED.error',
                       (decision.id, client_id, attempt, action, status, self.db.json(request), self.db.json(response) if response is not None else self.db.json({}), error))
+            self._eda_event(decision.id, 'execution_attempt', {'client_order_id': client_id, 'attempt': attempt, 'action': action, 'status': status, 'request': request, 'response': response or {}, 'error': error}, f'{client_id}:{action}:{attempt}:{status}', connection=c)
 
     def _record_order_attempt(self, order, action, status, request=None, response=None, error=None):
         attempt = int(time.time_ns() // 1000)
@@ -569,6 +586,7 @@ class LiveExecutionService:
                     VALUES(%s,%s,%s,%s,'fill',%s,%s,%s,%s,NOW()) ON CONFLICT(idempotency_key) DO NOTHING''',
                     ('ledger_fill_'+fill_id, 'fill:'+fill_id, order.id, order.decision_id,
                      quantity, quantity*fill_price, fill_fee, self.db.json(fill)))
+                self._eda_event(order.decision_id, 'fill_observed', {'order_id': order.id, 'fill_id': fill_id, 'quantity': quantity, 'price': fill_price, 'fee': fill_fee, 'payload': fill}, f'fill:{fill_id}', connection=c)
 
     def _fill_totals(self, order: OrderRecord):
         with self.db.connection() as c:

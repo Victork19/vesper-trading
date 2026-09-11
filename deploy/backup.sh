@@ -11,3 +11,9 @@ fi
 backup="backups/trading-postgres-$(date -u +%Y%m%dT%H%M%SZ).dump"
 docker run --rm -e DATABASE_URL postgres:16-alpine sh -c 'pg_dump --format=custom --no-owner --dbname="$DATABASE_URL"' > "$backup"
 echo "Created $backup"
+if [ -n "${BACKUP_UPLOAD_COMMAND:-}" ]; then
+  sh -c "$BACKUP_UPLOAD_COMMAND '$backup'"
+  echo "Uploaded $backup using BACKUP_UPLOAD_COMMAND"
+else
+  echo "WARNING: backup remains local; configure BACKUP_UPLOAD_COMMAND for remote object storage"
+fi

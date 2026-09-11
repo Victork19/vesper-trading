@@ -15,6 +15,8 @@ def test_live_release_requires_explicit_evidence_environment():
         "VESPER_FAULT_TESTS_PASSED",
         "VESPER_CONTROLLED_ACCOUNT_PASSED",
         "VESPER_BACKUP_RESTORE_PASSED",
+        "VESPER_EDA_TESTS_PASSED",
+        "VESPER_EDA_REPLAY_PARITY_PASSED",
     }
     if os.getenv("VESPER_RELEASE_CANDIDATE") != "1":
         pytest.skip("release evidence gate is opt-in")

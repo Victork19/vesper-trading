@@ -4,6 +4,8 @@
 
 Vesper Trading is a paper-first, multi-strategy prediction-market decision and risk platform. It combines calibrated probability estimation, executable quote validation, portfolio controls, durable order lifecycle records, operational telemetry, and memory-driven learning.
 
+The EDA foundation adds an immutable decision-episode layer: canonical timestamped events, point-in-time observation provenance, structured belief states, explicit objective and authority versions, candidate action sets, and links from decisions through execution to resolution.
+
 Its governing principle is simple:
 
 > Risk is earned, not assumed.

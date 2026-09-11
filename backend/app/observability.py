@@ -3,22 +3,50 @@ from collections import defaultdict,deque
 from datetime import datetime,timezone
 
 class MetricsRegistry:
- def __init__(self):
-  self.lock=threading.RLock();self.counters=defaultdict(float);self.gauges=defaultdict(float);self.histograms=defaultdict(lambda: {'count':0,'sum':0.0,'buckets':defaultdict(int)});self.recent_errors=deque(maxlen=500);self.started_at=time.time()
+ def __init__(self,database=None):
+  self.lock=threading.RLock();self.database=database;self.counters=defaultdict(float);self.gauges=defaultdict(float);self.histograms=defaultdict(lambda: {'count':0,'sum':0.0,'buckets':defaultdict(int)});self.recent_errors=deque(maxlen=500);self.started_at=time.time()
   self.buckets=(.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10)
+ def bind(self,database):
+  self.database=database
+  self._restore()
+ def _persist(self,metric_type,name,value,labels):
+  if not self.database:return
+  try:
+   labels=labels or {};key=self._key(name,labels)
+   with self.database.connection() as c:
+    c.execute('''INSERT INTO observability_metrics(metric_key,metric_name,metric_type,labels,value,updated_at)
+         VALUES(%s,%s,%s,%s,%s,NOW()) ON CONFLICT(metric_key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()''',
+         (key,name,metric_type,self.database.json(labels),float(value)))
+    c.execute('INSERT INTO observability_metric_samples(metric_key,metric_name,metric_type,labels,value,observed_at) VALUES(%s,%s,%s,%s,%s,NOW())',
+         (key,name,metric_type,self.database.json(labels),float(value)))
+  except Exception:
+   return
+ def _restore(self):
+  if not self.database:return
+  try:
+   with self.database.connection() as c:
+    for row in c.execute("SELECT metric_name,metric_type,labels,value FROM observability_metrics").fetchall():
+     key=self._key(row['metric_name'],row['labels'] or {})
+     if row['metric_type']=='counter':self.counters[key]=float(row['value'])
+     elif row['metric_type']=='gauge':self.gauges[key]=float(row['value'])
+  except Exception:
+   return
  def _key(self,name,labels):return name+''.join(f'{{{k}="{str(v).replace(chr(34),chr(39))}"}}' for k,v in sorted((labels or {}).items()))
  def inc(self,name,value=1,labels=None):
-  with self.lock:self.counters[self._key(name,labels)]+=value
+  with self.lock:
+   key=self._key(name,labels);self.counters[key]+=value;self._persist('counter',name,self.counters[key],labels)
  def set(self,name,value,labels=None):
-  with self.lock:self.gauges[self._key(name,labels)]=value
+  with self.lock:
+   key=self._key(name,labels);self.gauges[key]=value;self._persist('gauge',name,value,labels)
  def observe(self,name,value,labels=None):
   key=self._key(name,labels)
   with self.lock:
    h=self.histograms[key];h['count']+=1;h['sum']+=value
    for bucket in self.buckets:
     if value<=bucket:h['buckets'][bucket]+=1
+   self._persist('histogram',name,value,labels)
  def error(self,kind):
-  with self.lock:self.recent_errors.append(time.time());self.inc('vesper_errors_total',labels={'kind':kind})
+  with self.lock:self.recent_errors.append(time.time());self.inc('vesper_errors_total',labels={'kind':kind});self._persist('error',kind,1,{})
  def snapshot(self):
   with self.lock:
    now=time.time();recent=sum(1 for x in self.recent_errors if now-x<300);return {'uptime_seconds':round(now-self.started_at,3),'counters':dict(self.counters),'gauges':dict(self.gauges),'recent_errors_5m':recent}

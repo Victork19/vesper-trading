@@ -27,6 +27,23 @@ from .runtime_config import RuntimeConfig
 from .market_policy import fast_market_allowed,fast_markets_only,fast_max_resolution_hours
 from .live_execution import LiveExecutionService, VenueError
 from .research_validation import exposure_notional, research_exposure, canonical_dependency_metadata
+from .eda import (
+    DATA_VERSION,
+    OBJECTIVE_POLICY_VERSION,
+    POLICY_VERSION,
+    RISK_POLICY_VERSION,
+    build_belief_state,
+    build_episode,
+    default_objective_policy,
+    make_canonical_event,
+)
+from .attention import plan_attention
+from .consequence import evaluate_actions
+from .policy import propose_action
+from .replay_engine import replay_episode
+from .models import OpportunityObservation, ReplayRun, ModelRegistryRecord
+from .model_registry import promotion_decision
+from .experiential_memory import rank_memories
 from datetime import datetime,timezone,timedelta
 import time,uuid,json,logging,random
 validate_runtime_config()
@@ -101,12 +118,13 @@ def delete_session(vesper_session:str|None=Cookie(default=None)):
  security.revoke_session(vesper_session)
  response=PlainTextResponse('',status_code=204);response.delete_cookie('vesper_session',path='/');response.delete_cookie('vesper_csrf',path='/');return response
 memory=TradingMemory();runtime_config=RuntimeConfig(memory.db);runtime_values=runtime_config.sync_process();settings.max_portfolio_heat=float(runtime_values.get('MAX_PORTFOLIO_HEAT',settings.max_portfolio_heat));security=SecurityManager(settings,memory.db);edge=EdgeEngine();risk=RiskEngine(memory);portfolio=PortfolioRisk(memory);toxic=ToxicFlowDetector();bucket_killer=BucketKiller(memory);scars=ScarEngine(memory);metrics_engine=MetricsEngine(memory);markets=PolymarketData();graph=ExperienceGraph(memory);reference=ReferenceClassEngine();strategies=StrategyRegistry();secondary=SecondarySignals();ingestion_store=IngestionStore();autonomy=AutonomyGate(memory,ingestion_store);live_execution=LiveExecutionService(memory.db)
+telemetry.bind(memory.db)
 if settings.live_hard_lock and memory.hot().mode==Mode.LIVE:
     live_execution.kill_switch.activate('phase 0 hard lock active; live mode forcibly halted', 'system')
     locked_hot=memory.hot();locked_hot.mode=Mode.PAPER;memory.save_hot(locked_hot);memory.event('phase0_live_lock',{'reason':'hard_lock_active'})
 def live_evidence_checks():
  report=research_report(memory.decisions());oos=report.get('out_of_sample') or {};minimum=max(10,int(os.getenv('RESEARCH_MIN_OOS_BUCKETS','10')));minimum_markets=max(10,int(os.getenv('LIVE_MIN_OOS_MARKETS','20')));min_expectancy=float(os.getenv('LIVE_MIN_OOS_EXPECTANCY','0'));min_brier_lift=float(os.getenv('LIVE_MIN_BRIER_LIFT','0'));min_log_loss_lift=float(os.getenv('LIVE_MIN_LOG_LOSS_LIFT','0'))
- return {'research_available':report.get('status')=='available','oos_sample':int(oos.get('count') or 0)>=minimum,'oos_markets':int(oos.get('unique_markets') or 0)>=minimum_markets,'oos_expectancy':oos.get('expectancy_ci_low') is not None and float(oos['expectancy_ci_low'])>min_expectancy,'oos_brier_lift':oos.get('brier_lift_ci_low') is not None and float(oos['brier_lift_ci_low'])>min_brier_lift,'oos_log_loss_lift':oos.get('log_loss_lift_ci_low') is not None and float(oos['log_loss_lift_ci_low'])>min_log_loss_lift,'oos_clv':oos.get('clv_ci_low') is not None and float(oos['clv_ci_low'])>0}
+ return {'research_available':report.get('status')=='available','oos_sample':int(oos.get('count') or 0)>=minimum,'oos_markets':int(oos.get('unique_markets') or 0)>=minimum_markets,'oos_expectancy':oos.get('expectancy_ci_low') is not None and float(oos['expectancy_ci_low'])>min_expectancy,'oos_brier_lift':oos.get('brier_lift_ci_low') is not None and float(oos['brier_lift_ci_low'])>min_brier_lift,'oos_log_loss_lift':oos.get('log_loss_lift_ci_low') is not None and float(oos['log_loss_lift_ci_low'])>min_log_loss_lift,'oos_clv':oos.get('clv_ci_low') is not None and float(oos['clv_ci_low'])>0,'eda_integrity':memory.eda_integrity().get('healthy',False)}
 def live_execution_reconciled():
  try:
   result=live_execution.readiness()
@@ -186,6 +204,67 @@ def replay(decision_id,_=Depends(require_api_key)):
  if isinstance(x,dict) and x.get('snapshot_hash'):
   x=dict(x);x['verified_market_input']=ingestion_store.verified_input(x.get('snapshot_hash'))
  return x
+@app.get('/episodes/{episode_id}')
+def get_episode(episode_id:str,_=Depends(require_api_key)):
+ episode=memory.episode(episode_id)
+ if not episode:raise HTTPException(404,'Episode not found')
+ events=memory.eda_events(episode_id)
+ payload=episode.model_dump(mode='json');payload['events']=events
+ payload['latest_outcome']=next((item['payload'] for item in reversed(events) if item['event_type']=='outcome_resolved'),None)
+ payload['latest_attribution']=next((item['payload'] for item in reversed(events) if item['event_type']=='outcome_attribution'),None)
+ return payload
+@app.get('/episodes/{episode_id}/events')
+def episode_events(episode_id:str,limit:int=200,_=Depends(require_api_key)):
+ if not memory.episode(episode_id):raise HTTPException(404,'Episode not found')
+ return memory.eda_events(episode_id,max(1,min(limit,1000)))
+@app.post('/eda/information-requests/{request_id}/outcome')
+def information_request_outcome(request_id:str,payload:dict,principal=Depends(require_operator)):
+ episode_id=payload.get('episode_id')
+ if episode_id and not memory.episode(episode_id):raise HTTPException(404,'Episode not found')
+ status=str(payload.get('status') or 'unknown')
+ if status not in {'fulfilled','rejected','timed_out','failed'}:raise HTTPException(422,'invalid_information_request_status')
+ event=make_canonical_event('attention','information_request_outcome',{'request_id':request_id,**payload},episode_id=episode_id,source_event_id=request_id)
+ memory.append_eda_event(event);memory.event('eda_information_request_outcome',{'request_id':request_id,'status':status,'actor':principal.key_id});telemetry.inc('vesper_information_request_outcomes_total',labels={'status':status});return event
+@app.get('/eda/health')
+def eda_health(_=Depends(require_api_key)):
+ return {'integrity':memory.eda_integrity(),'opportunities':len(memory.opportunities()),'replay_runs':len(memory.replay_runs()),'models':len(memory.model_registry()),'telemetry':telemetry.snapshot()}
+@app.post('/operator/retention/cleanup')
+def retention_cleanup(principal=Depends(require_admin)):
+  result=memory.cleanup_retention();memory.event('retention_cleanup',{'actor':principal.key_id,'result':result});return result
+@app.get('/eda/telemetry')
+def eda_telemetry(format:str='json',_=Depends(require_api_key)):
+ if format == 'prometheus': return PlainTextResponse(telemetry.prometheus(),media_type='text/plain; version=0.0.4')
+ return telemetry.snapshot()
+@app.post('/eda/opportunities')
+def record_opportunity(opportunity:OpportunityObservation,principal=Depends(require_operator)):
+ memory.save_opportunity(opportunity);memory.event('eda_opportunity_recorded',{'opportunity_id':opportunity.opportunity_id,'status':opportunity.status,'actor':principal.key_id});telemetry.inc('vesper_opportunities_total',labels={'status':opportunity.status});return opportunity
+@app.get('/eda/opportunities')
+def list_opportunities(limit:int=200,_=Depends(require_api_key)):return memory.opportunities(limit)
+@app.post('/eda/replay/{episode_id}')
+def run_eda_replay(episode_id:str,mode:str='historical',as_of:str|None=None,_=Depends(require_api_key)):
+ episode=memory.episode(episode_id)
+ if not episode:raise HTTPException(404,'Episode not found')
+ current_objective=ObjectivePolicy.model_validate(memory.get('REFERENCE','objective_policy') or default_objective_policy().model_dump())
+ result=replay_episode(episode,memory.eda_events(episode_id),mode=mode,as_of=as_of,objective_policy=current_objective)
+ memory.save_replay(ReplayRun(replay_id=result['replay_id'],episode_id=episode_id,mode=mode,as_of=result['as_of'],result=result))
+ telemetry.inc('vesper_replay_runs_total',labels={'mode':mode,'mismatch':str(result['mismatch']).lower()})
+ return result
+@app.get('/eda/replays')
+def list_eda_replays(episode_id:str|None=None,limit:int=100,_=Depends(require_api_key)):return memory.replay_runs(episode_id,limit)
+@app.post('/eda/models')
+def register_eda_model(record:ModelRegistryRecord,principal=Depends(require_admin)):
+ decision=promotion_decision(record,operator=getattr(principal,'key_id',None))
+ record.status=decision['status'];record.approved_by=decision['approved_by'];memory.save_model_registry(record)
+ return {'record':record,'promotion':decision}
+@app.get('/eda/models')
+def list_eda_models(_=Depends(require_api_key)):return memory.model_registry()
+@app.get('/eda/memory/search')
+def search_eda_memory(query:str,limit:int=8,_=Depends(require_api_key)):
+ memories=memory.all('semantic')+memory.all('procedural')+memory.all('failure')+memory.all('model')
+ return rank_memories(memories,query,limit)
+@app.get('/eda/objective')
+def eda_objective(_=Depends(require_api_key)):
+ return memory.get('REFERENCE','objective_policy') or default_objective_policy().model_dump()
 @app.get('/graph')
 def graph_edges(_=Depends(require_api_key)):return graph.edges()
 @app.get('/audit')
@@ -450,9 +529,18 @@ def _decide_impl(req:DecisionRequest):
   experimental=experimental_estimate(req.market)
   if experimental is None:raise HTTPException(422,'Experimental strategy requires calibrated model evidence and both contract books.')
   req.market.reference_rate=experimental['probability'];req.market.model_version=experimental['model_version'];req.market.model_lower_bound=experimental['lower_bound'];req.market.model_upper_bound=experimental['upper_bound'];req.market.model_uncertainty=experimental['uncertainty'];req.market.signals={'relative_microstructure':experimental['probability']}
+ attention_plan=plan_attention(req.market,strategy_id=req.strategy_id,hot_state=h,max_portfolio_heat=settings.max_portfolio_heat)
+ opportunity_status={'analyze':'analyzed','request_information':'rejected_evidence','defer':'delayed','skip':'skipped'}.get(attention_plan.disposition,'discovered')
+ memory.save_opportunity(OpportunityObservation(opportunity_id='opportunity_'+attention_plan.plan_id,market_id=req.market.market_id,strategy_id=req.strategy_id,status=opportunity_status,reason='; '.join(attention_plan.reasons),snapshot_hash=req.market.snapshot_hash,payload={'attention_plan':attention_plan.model_dump(mode='json')}))
+ telemetry.set('vesper_attention_score',attention_plan.attention_score,labels={'strategy':req.strategy_id});telemetry.inc('vesper_attention_plans_total',labels={'disposition':attention_plan.disposition,'strategy':req.strategy_id})
+ for request in attention_plan.information_requests: telemetry.inc('vesper_information_requests_total',labels={'type':request.request_type,'required':str(request.required).lower()})
  has_reference_evidence=req.market.reference_rate is not None or bool(req.market.signals) or bool(history)
  calibrated=reference.calibrated_prior(req.market.market_type,req.market.reference_rate if req.market.reference_rate is not None else req.market.price,history)
- e=edge.estimate(req.market,calibrated);trust=memory.effective_trust(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
+ objective_policy=ObjectivePolicy.model_validate(memory.get('REFERENCE','objective_policy') or default_objective_policy().model_dump())
+ e=edge.estimate(req.market,calibrated);action_evaluations=evaluate_actions(req.market,fair_probability=e.fair_probability,confidence=e.confidence,uncertainty=e.uncertainty,hot_state=h,objective_policy=objective_policy);policy_proposal=propose_action(action_evaluations,e.recommended_side);telemetry.inc('vesper_consequence_evaluations_total',labels={'preferred_side':e.recommended_side,'policy_status':policy_proposal.status});trust=memory.effective_trust(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
+ memory_candidates=memory.all('semantic')+memory.all('procedural')+memory.all('failure')+memory.all('model')
+ retrieved_memories=rank_memories(memory_candidates,f'{req.market.question} {req.market.regime} {req.strategy_id}',limit=8)
+ telemetry.inc('vesper_memory_retrievals_total',value=1,labels={'count':str(len(retrieved_memories))})
  size,gates=risk.size(e,req.market,trust,strategy,settings.max_portfolio_heat);size*=memory.scar_size_multiplier(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
  quality_gates=[]
  quote_time=req.market.quote_observed_at or req.market.observed_at
@@ -463,12 +551,15 @@ def _decide_impl(req:DecisionRequest):
  if h.mode in (Mode.SHADOW,Mode.LIVE) and req.market.source.startswith('polymarket') and not ingestion_store.verified_input_matches(req.market):quality_gates.append('verified_market_snapshot_required')
  if req.market.source.startswith('polymarket') and (req.market.yes_ask is None or req.market.no_ask is None):quality_gates.append('both_contract_quotes_required')
  if req.market.source.startswith('polymarket') and (not req.market.yes_book_asks or not req.market.no_book_asks):quality_gates.append('both_contract_books_required')
+ if attention_plan.disposition=='request_information' and req.market.source.startswith('polymarket'):quality_gates.append('attention_information_required')
  if not fast_market_allowed(req.market.resolution_hours,req.market.source):quality_gates.append('slow_market_excluded')
  if not has_reference_evidence and req.market.source.startswith('polymarket'):quality_gates.append('reference_evidence_required')
  if h.mode in (Mode.SHADOW,Mode.LIVE) and req.market.source=='manual':quality_gates.append('untrusted_market_source')
  if h.mode in (Mode.SHADOW,Mode.LIVE) and (req.market.yes_ask is None or req.market.no_ask is None):quality_gates.append('executable_quote_required')
  if quality_gates:size=0;gates+=quality_gates
  flow=toxic.inspect(req.market,req.flow_imbalance,req.large_wallet_signal);size,risk_reasons=portfolio.gate(req.market,size,req.flow_imbalance,req.large_wallet_signal,e.recommended_side);gates+=risk_reasons+flow['flags'];relevant=memory.active_scars(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime);principles=[p for p in memory.principles() if p.status=='active' and p.strategy_id in (req.strategy_id,'global')];cited=[s.id for s in relevant];cp=[p.id for p in principles]
+ preferred_evaluation=next((item for item in action_evaluations if item.action==f'BUY {e.recommended_side}'),None)
+ if policy_proposal.status=='rejected' and preferred_evaluation is not None and preferred_evaluation.available and size>0:size=0;gates+=['consequence_policy_rejected']
  if bucket_killer.suspended(req.strategy_id,req.market.market_type,req.market.regime):size=0;gates+=['bucket_suspended_negative_expectancy']
  if any(s.impact.constitutional and s.impact.max_size_multiplier<=0 for s in relevant):size=0;gates+=['scar_constitutional_stop']
  if not req.evidence_complete:size=0;gates+=['evidence_completeness_gate']
@@ -494,15 +585,27 @@ def _decide_impl(req:DecisionRequest):
  paper_cost=max(0.0,(execution_price-paper_reference_price)*size*fill_fraction) if h.mode==Mode.PAPER else 0.0
  paper_ev=(e.side_probability-execution_price)*size*fill_fraction if h.mode==Mode.PAPER else e.raw_edge*size*fill_fraction
  d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=paper_ev,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,model_version=req.market.model_version,model_provenance=req.market.model_provenance,raw_model_probability=req.market.raw_model_probability,model_probability=req.market.model_probability,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence,fill_model_version='paper_microstructure_v1' if h.mode==Mode.PAPER else None,model_lower_bound=req.market.model_lower_bound,model_upper_bound=req.market.model_upper_bound,model_uncertainty=req.market.model_uncertainty,model_calibration_samples=req.market.model_calibration_samples,model_calibration_status=req.market.model_calibration_status,paper_fill_fraction=fill_fraction,paper_execution_price=paper_execution_price,paper_cost=paper_cost,paper_fill_reason=fill_reason,research_eligible=req.market.source.startswith('polymarket') and bool(req.market.snapshot_hash) and req.market.quote_observed_at is not None,market_context={'resolution_hours':req.market.resolution_hours,'market_end_time':req.market.market_end_time.isoformat() if req.market.market_end_time else None,'yes_bid':req.market.yes_bid,'yes_ask':req.market.yes_ask,'no_bid':req.market.no_bid,'no_ask':req.market.no_ask,'liquidity':req.market.liquidity,'volume_24h':req.market.volume_24h,'fee_rate':req.market.fee_rate,'slippage_bps':req.market.slippage_bps,'correlation_cluster':correlation_cluster(req.market),'event_family':event_family(req.market.question,req.market.market_type)})
+ d.market_context['retrieved_memories']=retrieved_memories
  d.market_context.update({'yes_token_id':req.market.yes_token_id,'no_token_id':req.market.no_token_id,'yes_quote_observed_at':req.market.yes_quote_observed_at.isoformat() if req.market.yes_quote_observed_at else None,'no_quote_observed_at':req.market.no_quote_observed_at.isoformat() if req.market.no_quote_observed_at else None,'quote_skew_seconds':req.market.quote_skew_seconds,'yes_ask_levels':[level.model_dump() for level in req.market.yes_book_asks],'no_ask_levels':[level.model_dump() for level in req.market.no_book_asks]})
  d.market_context.update(canonical_dependency_metadata(req.market.question,req.market.market_type,market_id=req.market.market_id,resolution_end=req.market.market_end_time,source=req.market.source))
+ d.market_context.update({'attention_plan':attention_plan.model_dump(mode='json'),'information_requests':[item.model_dump(mode='json') for item in attention_plan.information_requests],'action_evaluations':[item.model_dump(mode='json') for item in action_evaluations],'policy_proposal':policy_proposal.model_dump(mode='json')})
+ episode_id='episode_'+os.urandom(8).hex()
+ d.episode_id=episode_id;d.objective_policy_version=OBJECTIVE_POLICY_VERSION;d.policy_version=POLICY_VERSION;d.risk_policy_version=RISK_POLICY_VERSION;d.data_version=DATA_VERSION
+ final_opportunity_status='selected_for_paper' if d.size>0 and h.mode==Mode.PAPER else 'selected_for_shadow' if d.size>0 and h.mode==Mode.SHADOW else 'rejected_risk' if gates else 'rejected'
+ memory.save_opportunity(OpportunityObservation(opportunity_id='opportunity_'+attention_plan.plan_id,market_id=req.market.market_id,strategy_id=req.strategy_id,status=final_opportunity_status,reason='; '.join(gates) or rationale,snapshot_hash=req.market.snapshot_hash,episode_id=episode_id,payload={'decision_id':d.id,'gates':gates,'attention_plan':attention_plan.model_dump(mode='json')}))
+ observation_event=make_canonical_event('decision_engine','market_input_observed',req.market.model_dump(mode='json'),event_time=req.market.observed_at or d.created_at,episode_id=episode_id,source_event_id=req.market.snapshot_hash,quality=EventQuality(completeness=1.0 if req.market.snapshot_hash else .75,confidence=req.market.quality_score,missing_fields=(['snapshot_hash'] if not req.market.snapshot_hash else []),valid=True))
+ belief_state=build_belief_state(req.market,source_event_id=observation_event.event_id,hot_state=h)
+ d.belief_state_id=belief_state.belief_state_id
+ episode=build_episode(d,req.market,belief_state,objective_policy,attention_plan=attention_plan,action_evaluations=action_evaluations,policy_proposal=policy_proposal)
+ episode.memory_links={'retrieved_memories':retrieved_memories}
+ decision_event=make_canonical_event('decision_engine','decision_evaluated',{'decision':d.model_dump(mode='json'),'episode_id':episode_id},event_time=d.created_at,episode_id=episode_id,source_event_id=d.id,quality=EventQuality(confidence=d.confidence,valid=True))
  # Live capital is reserved by the execution service. Portfolio heat reflects
  # durable fills, never the pre-submit decision size.
  effective_exposure=exposure_notional(d.size*d.paper_fill_fraction,paper_execution_price if paper_execution_price is not None else execution_price,req.market.fee_rate,req.market.slippage_bps) if h.mode!=Mode.LIVE else 0.0
  if effective_exposure>0:
   h.portfolio_heat+=effective_exposure;h.open_risk+=effective_exposure
  telemetry.inc('vesper_decisions_total',labels={'mode':h.mode.value,'action':action,'strategy':req.strategy_id});telemetry.set('vesper_portfolio_heat',h.portfolio_heat)
- memory.save_decision(d,h if effective_exposure>0 else None);memory.event('decision',d.model_dump())
+ memory.save_decision(d,h if effective_exposure>0 else None,episode=episode,eda_events=[observation_event,decision_event]);memory.event('decision',d.model_dump())
  if req.execute and d.size>0:
   external_submission=False
   try:
@@ -530,12 +633,12 @@ def _decide_impl(req:DecisionRequest):
    d.order_id=order.id;d.executed_size=order.filled_size;d.executed_notional=order.filled_notional;d.executed_fees=order.filled_fees;d.executed_average_price=order.average_fill_price;d.execution_reconciled=h.mode!=Mode.LIVE and order.status in {OrderStatus.FILLED,OrderStatus.CANCELED,OrderStatus.EXPIRED,OrderStatus.REJECTED,OrderStatus.FAILED}
    if h.mode==Mode.LIVE and order.filled_size>0:
     h.portfolio_heat+=order.filled_notional+order.filled_fees;h.open_risk+=order.filled_notional+order.filled_fees
-   memory.save_order(order,d);telemetry.inc('vesper_orders_total',labels={'mode':h.mode.value,'status':order.status.value});memory.event('execution',order.model_dump())
+   memory.save_order(order,d);telemetry.inc('vesper_orders_total',labels={'mode':h.mode.value,'status':order.status.value});memory.event('execution',order.model_dump());memory.append_eda_event(make_canonical_event('execution','execution_result',order.model_dump(mode='json'),episode_id=d.episode_id,source_event_id=order.id,quality=EventQuality(confidence=1.0 if d.execution_reconciled else .5,valid=True)))
   except Exception as exc:
    if h.mode==Mode.LIVE and external_submission:
     live_execution.kill_switch.activate('live submission persistence failed; reconciliation required', 'system')
     d.status='reconciliation-required';d.outcome='pending';d.execution_reconciled=False;d.rationale=f'Live submission was acknowledged but local persistence failed: {exc}'
-    memory.save_decision(d);telemetry.error('live_persistence_failure');memory.event('execution_reconciliation_required',{'decision_id':d.id,'error':str(exc)})
+    memory.save_decision(d);telemetry.error('live_persistence_failure');memory.event('execution_reconciliation_required',{'decision_id':d.id,'error':str(exc)});memory.append_eda_event(make_canonical_event('execution','execution_reconciliation_required',{'decision_id':d.id,'error':str(exc)},episode_id=d.episode_id,source_event_id=d.id,quality=EventQuality(confidence=0.0,valid=False)))
     return d
    # An adapter failure is terminal for this order attempt. Release the
    # reservation immediately so a transient venue/configuration error cannot
@@ -543,7 +646,7 @@ def _decide_impl(req:DecisionRequest):
    h.portfolio_heat=max(0,h.portfolio_heat-effective_exposure);h.open_risk=max(0,h.open_risk-effective_exposure)
    d.outcome='execution_failed';d.status='execution-failed';d.resolved_at=now_iso();d.rationale=f'Execution failed: {exc}'
    memory.save_decision(d,h)
-   order=OrderRecord(id='order_'+os.urandom(6).hex(),client_order_id='failed_'+os.urandom(6).hex(),decision_id=d.id,mode=h.mode,market_id=d.market_id,side=d.side or 'UNKNOWN',requested_size=d.size,limit_price=d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price,status=OrderStatus.FAILED,error=str(exc));d.order_id=order.id;memory.save_order(order,d);telemetry.inc('vesper_orders_total',labels={'mode':h.mode.value,'status':order.status.value});telemetry.error('order_execution');memory.event('execution_blocked',order.model_dump())
+   order=OrderRecord(id='order_'+os.urandom(6).hex(),client_order_id='failed_'+os.urandom(6).hex(),decision_id=d.id,mode=h.mode,market_id=d.market_id,side=d.side or 'UNKNOWN',requested_size=d.size,limit_price=d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price,status=OrderStatus.FAILED,error=str(exc));d.order_id=order.id;memory.save_order(order,d);telemetry.inc('vesper_orders_total',labels={'mode':h.mode.value,'status':order.status.value});telemetry.error('order_execution');memory.event('execution_blocked',order.model_dump());memory.append_eda_event(make_canonical_event('execution','execution_failed',order.model_dump(mode='json'),episode_id=d.episode_id,source_event_id=order.id,quality=EventQuality(confidence=0.0,valid=False)))
  return d
 @app.post('/decide',response_model=DecisionRecord)
 def decide(req:DecisionRequest,_=Depends(require_trade)):

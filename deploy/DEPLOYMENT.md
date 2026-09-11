@@ -81,6 +81,12 @@ MIN_DATA_QUALITY=0.95
 MARKET_DATA_RETRIES=3
 MAX_BOOK_LEVELS=50
 INGEST_REQUIRE_BOOKS=true
+INGEST_OBSERVATION_SAMPLE_SECONDS=300
+RETENTION_RAW_MARKET_DAYS=30
+RETENTION_MARKET_EVENT_DAYS=30
+RETENTION_METRIC_SAMPLE_DAYS=7
+RETENTION_JOURNAL_DAYS=365
+RETENTION_CLEANUP_INTERVAL_SECONDS=21600
 
 VESPER_AUTH_REQUIRED=true
 VESPER_API_KEY=long-random-client-key
@@ -92,6 +98,23 @@ VESPER_RATE_LIMIT_PER_MINUTE=120
 LIVE_TRADING_ENABLED=false
 MAX_LIVE_CAPITAL=0
 MAX_LIVE_ORDER_SIZE=0
+```
+
+`DATABASE_URL` must point to a managed or separately replicated PostgreSQL
+service such as Supabase for VPS-loss protection. Do not run the authoritative
+database on the same VPS disk as the application. Vesper persists decisions,
+EDA episodes/events, market evidence, orders, fills, accounting, security,
+configuration history, replay results, model registry records, opportunities,
+and durable observability samples in PostgreSQL. The local backup script is an
+additional export and must itself be copied to remote object storage; a backup
+left on the VPS does not protect against VPS disk loss.
+
+To reclaim existing high-volume rows immediately after deployment, call the
+admin-only retention endpoint:
+
+```bash
+curl -X POST -H "X-Vesper-Key: $VESPER_ADMIN_KEY" \
+  "https://${VESPER_DOMAIN}/operator/retention/cleanup"
 ```
 
 Do not configure `POLYMARKET_PRIVATE_KEY` for paper mode.

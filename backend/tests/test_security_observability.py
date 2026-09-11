@@ -22,6 +22,8 @@ def test_operational_surfaces():
  assert c.get('/observability',headers=headers).status_code==200
  assert c.get('/alerts',headers=headers).status_code==200
  assert c.get('/metrics/prometheus',headers=headers).status_code==200
+ assert c.post('/eda/information-requests/request/outcome',headers=headers,json={'status':'fulfilled'}).status_code==403
+  assert c.post('/operator/retention/cleanup',headers=headers).status_code==403
 
 def test_production_config_rejects_disabled_auth(monkeypatch):
  import app.config as config

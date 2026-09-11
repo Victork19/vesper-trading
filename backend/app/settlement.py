@@ -6,8 +6,11 @@ from typing import Any
 
 from .engines import ScarEngine
 from .metrics import MetricsEngine
-from .models import DecisionRecord, now_iso
+from .models import DecisionRecord, EventQuality, now_iso
+from .eda import make_canonical_event
 from .observability import telemetry
+from .attribution import evaluate_attribution
+from .experiential_memory import build_postmortem
 
 
 def settle_decision(
@@ -73,6 +76,24 @@ def settle_decision(
     decision.resolved_yes = resolved_yes
     decision.resolved_at = now_iso()
     decision.market_context = {**(decision.market_context or {}), 'resolution_source': source, 'resolution_verified': True}
+    episode = memory.episode_for_decision(decision.id)
+    attribution = evaluate_attribution(decision, action_evaluations=episode.action_evaluations if episode else [])
+    decision.attribution = attribution
+    decision.evaluation_metrics = attribution["metrics"]
+    decision.counterfactuals = {
+        "best_available_alternative_utility": attribution["metrics"]["best_available_alternative_utility"],
+        "selected_expected_utility": attribution["metrics"]["selected_expected_utility"],
+        "status": "estimate_not_causal",
+    }
+    settlement_event = make_canonical_event("settlement", "outcome_resolved", {
+        "decision_id": decision.id, "outcome": outcome, "pnl": pnl, "clv": clv,
+        "resolved_yes": resolved_yes, "source": source, "resolution": resolution or {},
+    }, event_time=decision.resolved_at, episode_id=decision.episode_id, source_event_id=decision.id,
+       quality=EventQuality(confidence=1.0 if resolved_yes is not None else .5, valid=True))
+    attribution_event = make_canonical_event("attribution", "outcome_attribution", {
+        "decision_id": decision.id, "attribution": attribution,
+    }, event_time=decision.resolved_at, episode_id=decision.episode_id, source_event_id=decision.id,
+       quality=EventQuality(confidence=1.0, valid=True))
 
     with memory.decision_lock(decision.id):
       with memory.portfolio_lock() as portfolio_connection:
@@ -88,7 +109,7 @@ def settle_decision(
         hot.open_risk = max(0, hot.open_risk - effective_exposure)
         trust = hot.trust.get(decision.strategy_id, 0.5)
         hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
-        memory.save_settlement_state(decision,hot,portfolio_connection)
+        memory.save_settlement_state(decision,hot,portfolio_connection,eda_events=[settlement_event, attribution_event])
         reservation_count=memory.settle_reservations(decision.id,portfolio_connection)
         if live_execution and reservation_count == 0:
             raise ValueError("live settlement requires a capital reservation")
@@ -107,7 +128,7 @@ def settle_decision(
                  memory.db.json({'outcome':outcome,'resolved_yes':resolved_yes,'source':source})))
 
     measured_process_score=max(0.0,min(1.0,process_score if process_score is not None else (1.0 if pnl>0 and evidence_complete else .5 if evidence_complete else .25)))
-    snapshot = metrics.outcome(decision, pnl, clv, measured_process_score, resolved_yes)
+    snapshot = metrics.outcome(decision, pnl, clv, measured_process_score, resolved_yes, attribution=attribution)
     memory.event("outcome_recorded", {
         "decision_id": decision.id,
         "outcome": outcome,
@@ -117,7 +138,9 @@ def settle_decision(
         "resolution": resolution or {},
         "settled_at": now_iso(),
         "snapshot": snapshot.model_dump(),
+        "attribution": attribution,
     })
+    memory.put("failure" if outcome in ("loss", "failure", "negative") else "semantic", f"postmortem:{decision.id}", build_postmortem(decision, attribution))
     telemetry.inc("vesper_outcomes_total", labels={"outcome": outcome, "source": source})
     telemetry.set("vesper_daily_pnl", hot.daily_pnl)
     telemetry.set("vesper_weekly_pnl", hot.weekly_pnl)

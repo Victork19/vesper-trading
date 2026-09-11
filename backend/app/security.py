@@ -109,13 +109,14 @@ class SecurityManager:
    if int(payload.get('exp',0))<int(time.time()): raise ValueError('expired')
    scope=str(payload.get('scope',''));key_id=str(payload.get('key_id','session'))
    if not self._active_key_id(key_id): raise HTTPException(401,'Session key has been revoked')
+   session_allowed=scope==required or (required=='read' and scope in {'admin','trade','operator','settlement_admin','risk_admin'})
+   if not session_allowed: raise HTTPException(403,'Insufficient session scope')
    if self.db:
     with self.db.connection() as c:
      idle=int(getattr(self.settings,'session_idle_seconds',900))
      active=c.execute("SELECT 1 FROM security_sessions WHERE session_id=%s AND token_digest=%s AND revoked_at IS NULL AND expires_at>NOW() AND last_seen_at>NOW()-(%s * interval '1 second')",(payload.get('sid'),self._hash(token),idle)).fetchone()
      if not active:raise HTTPException(401,'Session is revoked or expired')
      c.execute('UPDATE security_sessions SET last_seen_at=NOW() WHERE session_id=%s',(payload.get('sid'),))
-   if not (scope=='admin' or scope==required or (required=='read' and scope in {'trade','operator','settlement_admin','risk_admin'})): raise HTTPException(403,'Insufficient session scope')
    return Principal(key_id,scope)
   except HTTPException: raise
   except Exception: raise HTTPException(401,'Invalid or expired session')

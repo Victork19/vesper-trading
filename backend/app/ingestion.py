@@ -5,6 +5,8 @@ from .db import PostgresDatabase
 from .market_data import PolymarketData
 from .observability import telemetry
 from .resolver import OutcomeResolver
+from .eda import insert_canonical_event_json, make_canonical_event
+from .models import EventQuality
 
 class IngestionStore:
  def __init__(self,database=None,path=None):self.db=database or PostgresDatabase();self.require_books=os.getenv('INGEST_REQUIRE_BOOKS','true').lower()=='true';self.require_both_books=os.getenv('INGEST_REQUIRE_BOTH_BOOKS','true').lower()=='true';self.lock=threading.RLock()
@@ -28,7 +30,16 @@ class IngestionStore:
    if not market_id:return False
    payload=json.dumps(market,sort_keys=True,separators=(',',':'));digest=hashlib.sha256(payload.encode()).hexdigest();observed=datetime.now(timezone.utc).isoformat();reason=self.validation_reason(market);valid=reason is None;book=market.get('_vesper_book') or {};no_book=market.get('_vesper_no_book') or {};book_valid=bool(book.get('best_bid') is not None and book.get('best_ask') is not None and book.get('best_bid')<book.get('best_ask') and (not self.require_both_books or (no_book.get('best_bid') is not None and no_book.get('best_ask') is not None and no_book.get('best_bid')<no_book.get('best_ask'))) and self.book_skew_seconds(market)<=max(1,float(os.getenv('MAX_CONTRACT_QUOTE_SKEW_SECONDS','10'))));sequence=book.get('sequence')
    with self.db.connection() as c:
-    inserted=c.execute('INSERT INTO market_snapshots(market_id,observed_at,payload,payload_hash) VALUES(%s,%s,%s,%s) ON CONFLICT(payload_hash) DO NOTHING',(market_id,observed,self.db.json(market),digest)).rowcount==1;c.execute('INSERT INTO market_observations(market_id,observed_at,payload_hash,valid,validation_reason,book_valid,book_sequence) VALUES(%s,%s,%s,%s,%s,%s,%s)',(market_id,observed,digest,valid,reason,book_valid,sequence))
+    inserted=c.execute('INSERT INTO market_snapshots(market_id,observed_at,payload,payload_hash) VALUES(%s,%s,%s,%s) ON CONFLICT(payload_hash) DO NOTHING',(market_id,observed,self.db.json(market),digest)).rowcount==1
+    sample_seconds=max(0,int(os.getenv('INGEST_OBSERVATION_SAMPLE_SECONDS','300')))
+    recent=c.execute('SELECT 1 FROM market_observations WHERE market_id=%s AND observed_at>NOW()-(%s * interval \'1 second\') LIMIT 1',(market_id,sample_seconds)).fetchone() if sample_seconds else None
+    if not recent:
+     c.execute('INSERT INTO market_observations(market_id,observed_at,payload_hash,valid,validation_reason,book_valid,book_sequence) VALUES(%s,%s,%s,%s,%s,%s,%s)',(market_id,observed,digest,valid,reason,book_valid,sequence))
+    missing=[]
+    if not market.get('question'): missing.append('question')
+    if not book: missing.append('yes_order_book')
+    if self.require_both_books and not no_book: missing.append('no_order_book')
+    insert_canonical_event_json(c,self.db,make_canonical_event('polymarket','market_snapshot',market,event_time=observed,source_event_id=digest,quality=EventQuality(completeness=max(0.0,1.0-len(missing)/3),confidence=1.0 if valid else .25,missing_fields=missing,valid=valid)))
    telemetry.inc('vesper_market_observations_total',labels={'valid':str(int(valid)),'book_valid':str(int(book_valid))});return inserted
  def validate(self,market):
   return self.validation_reason(market) is None
