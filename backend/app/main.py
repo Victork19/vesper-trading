@@ -4,6 +4,7 @@ import re
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, Cookie
 from fastapi.responses import PlainTextResponse,JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
 from .models import *
 from .config import settings,validate_runtime_config
 from .strategies import StrategyRegistry
@@ -149,7 +150,10 @@ def _readiness_payload():
 @app.get('/ready')
 def ready():
  payload=_readiness_payload()
- return payload if payload['ready'] else JSONResponse(payload,status_code=503)
+ return payload if payload["ready"] else JSONResponse(
+    content=jsonable_encoder(payload),
+    status_code=503,
+)
 @app.get('/state/hot',response_model=HotState)
 def hot(_=Depends(require_api_key)):return memory.hot()
 @app.get('/constitution')
