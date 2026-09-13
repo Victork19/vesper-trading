@@ -57,7 +57,10 @@ async function api<T>(path: string, options: RequestInit = {}, signal?: AbortSig
     requestHeaders.set('Accept', 'application/json');
     const csrfCookie = document.cookie.split('; ').find(item => item.startsWith('vesper_csrf='))?.split('=').slice(1).join('=');
     const csrf = runtimeCsrf || csrfCookie || '';
-    if ((runtimeApiKey || CONFIGURED_API_KEY) && !csrf && !requestHeaders.has('X-Vesper-Key')) requestHeaders.set('X-Vesper-Key', runtimeApiKey || CONFIGURED_API_KEY);
+    // Keep the API-key fallback available even when a session CSRF token is
+    // present. Cross-origin cookies can be unavailable in some browsers, and
+    // the key is the authenticated fallback for read requests.
+    if ((runtimeApiKey || CONFIGURED_API_KEY) && !requestHeaders.has('X-Vesper-Key')) requestHeaders.set('X-Vesper-Key', runtimeApiKey || CONFIGURED_API_KEY);
     if (method === 'GET' || method === 'HEAD') requestHeaders.delete('Content-Type');
     else requestHeaders.set('Content-Type', 'application/json');
     if (method !== 'GET' && method !== 'HEAD') requestHeaders.set('X-Vesper-CSRF', decodeURIComponent(csrf || ''));
