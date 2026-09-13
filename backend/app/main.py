@@ -274,7 +274,9 @@ def graph_edges(_=Depends(require_api_key)):return graph.edges()
 @app.get('/audit')
 def audit(limit:int=200,_=Depends(require_api_key)):return memory.audit(max(1,min(limit,1000)))
 @app.get('/risk')
-def risk_state(_=Depends(require_api_key)):return {'portfolio_heat':portfolio.heat(),'daily_pnl':memory.hot().daily_pnl,'weekly_pnl':memory.hot().weekly_pnl,'correlation_regime':memory.hot().correlation_regime}
+def risk_state(_=Depends(require_api_key)):
+ realized_pnl=sum(float(decision.pnl or 0) for decision in memory.decisions() if decision.outcome in ('win','loss','push'))
+ return {'portfolio_heat':portfolio.heat(),'max_portfolio_heat':settings.max_portfolio_heat,'realized_pnl':realized_pnl,'daily_pnl':memory.hot().daily_pnl,'weekly_pnl':memory.hot().weekly_pnl,'correlation_regime':memory.hot().correlation_regime}
 @app.get('/dashboard')
 def dashboard(_=Depends(require_api_key)):
  h=memory.hot();return {'mode':h.mode,'risk':risk_state(),'pipeline':autonomy.status(),'observations':ingestion_store.status(),'decisions':len(memory.decisions()),'scars':len(memory.scars()),'principles':len(memory.principles()),'metrics':len(memory.snapshots())}
