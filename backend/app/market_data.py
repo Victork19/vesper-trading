@@ -96,7 +96,12 @@ class PolymarketData:
     text=str(label).strip().lower()
     if text in ('yes','true'):yes=str(token)
     elif text in ('no','false'):no=str(token)
-  if yes is None or no is None or yes==no:raise MarketDataError('market must provide explicit YES and NO outcome labels')
+  # Gamma occasionally returns non-binary or incomplete markets in the
+  # active-market feed. Those markets are still useful for ingestion/quality
+  # reporting, but they cannot provide executable YES/NO paper inputs.
+  if yes is None or no is None or yes==no:
+   telemetry.inc('vesper_markets_missing_outcome_labels')
+   return None,None
   return yes,no
  def to_input(self,item,book=None,yes_book=None,no_book=None):
   item=self.validate_market(item);yes_book=yes_book or book;yes_token,no_token=self.token_pair(item);prices=item.get('outcomePrices',[.5])
