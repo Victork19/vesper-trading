@@ -145,7 +145,7 @@ def health():telemetry.set('vesper_mode',{'paper':0,'shadow':1,'live':2}.get(mem
 def _readiness_payload():
  q=ingestion_store.quality();h=memory.hot();approval=memory.get('HOT','live_approval') or {};worker=ingestion_store.worker_health()
  decisions=memory.decisions();sample_keys={f'{d.strategy_id}:{d.market_id}:{d.regime}:{d.model_version or "none"}' for d in decisions if d.size>0 and d.paper_fill_fraction>0 and d.outcome!='pending'}
- live_checks={'auth_configured':bool(settings.api_key and settings.admin_key),'limits_configured':settings.max_capital>0 and settings.max_order_size>0,'sample_gate':len(sample_keys)>=settings.min_sample,'data_quality':q['score']>=settings.min_data_quality and not q['stale'],'operator_approved':live_approval_active(),'execution_reconciled':live_execution_reconciled(),**live_evidence_checks()}
+ live_checks={'auth_configured':bool(settings.api_key and settings.admin_key),'limits_configured':settings.max_capital>0 and settings.max_order_size>0,'sample_gate':len(sample_keys)>=settings.min_sample,'data_quality':q['score']>=settings.min_data_quality and q.get('book_coverage',0)>=settings.min_data_quality and not q['stale'],'operator_approved':live_approval_active(),'execution_reconciled':live_execution_reconciled(),**live_evidence_checks()}
  checks={'api':True,'memory':memory.db.ping(),'worker':not worker.get('stale',True),'data_quality':q['score']>=settings.min_data_quality or h.mode==Mode.PAPER,'data_fresh':not q['stale'] or h.mode==Mode.PAPER,'live_safe':all(live_checks) if h.mode==Mode.LIVE else True};return {'ready':all(checks.values()),'checks':checks,'live_checks':live_checks,'quality':q,'worker':worker}
 @app.get('/ready')
 def ready():
@@ -350,7 +350,7 @@ def readiness(_=Depends(require_api_key)):return _readiness_payload()
 def readiness_summary(_=Depends(require_api_key)):
  q=ingestion_store.quality();worker=ingestion_store.worker_health();decisions=memory.decisions();exposed=[d for d in decisions if d.size>0 and d.paper_fill_fraction>0];resolved=[d for d in exposed if d.outcome!='pending'];pending=[d for d in exposed if d.outcome=='pending'];key=lambda d:f'{d.strategy_id}:{d.market_id}:{d.regime}:{d.model_version or "none"}';resolved_keys={key(d) for d in resolved};pending_keys={key(d) for d in pending};snapshots=memory.snapshots();resolved_count=len(resolved);wins=sum(1 for d in resolved if d.outcome=='win');pnl=sum(float(d.pnl) for d in resolved);minimum=settings.min_sample;blockers=[]
  if len(resolved_keys)<minimum:blockers.append(f'Need {minimum-len(resolved_keys)} more independent resolved paper outcomes before the live sample gate can pass.')
- if q['score']<settings.min_data_quality or q['stale']:blockers.append('Market data must remain fresh and above the configured quality threshold.')
+ if q['score']<settings.min_data_quality or q.get('book_coverage',0)<settings.min_data_quality or q['stale']:blockers.append('Market data must remain fresh, valid, and sufficiently quote-covered.')
  if worker.get('stale'):blockers.append('Ingestion worker heartbeat is stale or missing.')
  if not settings.live_enabled:blockers.append('LIVE_TRADING_ENABLED is false.')
  if settings.max_capital<=0 or settings.max_order_size<=0:blockers.append('Live capital and order limits are not configured.')
@@ -457,6 +457,7 @@ def alerts(_=Depends(require_api_key)):
  q=ingestion_store.quality();worker=ingestion_store.worker_health();snap=telemetry.snapshot();items=[]
  if q['stale']:items.append({'severity':'critical','code':'MARKET_DATA_STALE','message':'No fresh market observations within the freshness window.'})
  if q['score']<settings.min_data_quality:items.append({'severity':'warning','code':'MARKET_DATA_QUALITY_LOW','message':f"Market-data quality is {q['score']:.3f}."})
+ if q.get('book_coverage',0)<settings.min_data_quality:items.append({'severity':'warning','code':'MARKET_BOOK_COVERAGE_LOW','message':f"Executable YES/NO ask coverage is {q.get('book_coverage',0):.3f}."})
  if worker.get('stale'):items.append({'severity':'critical','code':'INGESTION_WORKER_STALE','message':'The ingestion worker has not reported a successful heartbeat recently.'})
  if snap['recent_errors_5m']>=5:items.append({'severity':'critical','code':'ERROR_BURST','message':f"{snap['recent_errors_5m']} errors observed in five minutes."})
  return {'active':items,'count':len(items),'generated_at':now_iso()}

@@ -13,7 +13,12 @@ class IngestionStore:
  def eligibility_reason(self,market):
   if str(market.get('enableOrderBook','true')).strip().lower() in ('false','0','no'):return 'order_book_disabled'
   yes,no=binary_token_pair(market)
-  return None if yes and no else 'unsupported_outcome_labels'
+  if not yes or not no:return 'unsupported_outcome_labels'
+  book=market.get('_vesper_book') or {};no_book=market.get('_vesper_no_book') or {}
+  if book.get('best_ask') is None:return 'missing_order_book_ask'
+  if no_book.get('best_ask') is None:return 'missing_no_order_book_ask'
+  if self.book_skew_seconds(market)>max(1,float(os.getenv('MAX_CONTRACT_QUOTE_SKEW_SECONDS','10'))):return 'incoherent_book_timestamps'
+  return None
  def book_skew_seconds(self,market):
   books=[market.get('_vesper_book') or {},market.get('_vesper_no_book') or {}]
   stamps=[]
@@ -96,9 +101,10 @@ class IngestionStore:
   with self.db.connection() as c:return c.execute('SELECT COUNT(DISTINCT market_id) AS count FROM market_observations').fetchone()['count']
  def quality(self):
   window=self.quality_window_seconds
-  with self.db.connection() as c:row=c.execute("SELECT COUNT(*) FILTER (WHERE eligible) AS total,COUNT(*) FILTER (WHERE eligible AND NOT valid) AS invalid,COUNT(*) FILTER (WHERE eligible AND NOT book_valid) AS invalid_books,COUNT(*) FILTER (WHERE NOT eligible) AS ineligible,MAX(observed_at) FILTER (WHERE eligible) AS last FROM market_observations WHERE observed_at>=NOW()-(%s * interval '1 second')",(window,)).fetchone();reason_rows=c.execute("SELECT COALESCE(validation_reason,'unknown') AS reason,COUNT(*) AS count FROM market_observations WHERE eligible AND NOT valid AND observed_at>=NOW()-(%s * interval '1 second') GROUP BY validation_reason ORDER BY count DESC",(window,)).fetchall()
-  total=int(row['total'] or 0);invalid=int(row['invalid'] or 0);invalid_books=int(row['invalid_books'] or 0);ineligible=int(row['ineligible'] or 0);last=row['last'];last_value=last.isoformat() if hasattr(last,'isoformat') else last;stale=not last or (datetime.now(timezone.utc)-last).total_seconds()>300
-  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'observed_snapshots':total+ineligible,'ineligible_observations':ineligible,'quality_window_seconds':window,'missing_required_fields':invalid,'invalid_observations':invalid,'invalid_books':invalid_books,'invalid_reasons':{row['reason']:row['count'] for row in reason_rows},'book_coverage':0 if not total else max(0,1-(invalid_books/total)),'last_observed_at':last_value,'stale':stale}
+  quote_reasons="'missing_order_book','missing_no_order_book','missing_order_book_ask','missing_no_order_book_ask','invalid_order_book','invalid_no_order_book','incoherent_book_timestamps'"
+  with self.db.connection() as c:row=c.execute(f"SELECT COUNT(*) FILTER (WHERE eligible) AS total,COUNT(*) FILTER (WHERE eligible AND NOT valid) AS invalid,COUNT(*) FILTER (WHERE eligible AND NOT book_valid) AS invalid_books,COUNT(*) FILTER (WHERE NOT eligible) AS ineligible,COUNT(*) FILTER (WHERE eligible OR validation_reason IN ({quote_reasons})) AS quote_candidates,COUNT(*) FILTER (WHERE eligible AND book_valid) AS quote_ready,MAX(observed_at) FILTER (WHERE eligible) AS last FROM market_observations WHERE observed_at>=NOW()-(%s * interval '1 second')",(window,)).fetchone();reason_rows=c.execute("SELECT COALESCE(validation_reason,'unknown') AS reason,COUNT(*) AS count FROM market_observations WHERE eligible AND NOT valid AND observed_at>=NOW()-(%s * interval '1 second') GROUP BY validation_reason ORDER BY count DESC",(window,)).fetchall();ineligible_rows=c.execute("SELECT COALESCE(validation_reason,'unknown') AS reason,COUNT(*) AS count FROM market_observations WHERE NOT eligible AND observed_at>=NOW()-(%s * interval '1 second') GROUP BY validation_reason ORDER BY count DESC",(window,)).fetchall()
+  total=int(row['total'] or 0);invalid=int(row['invalid'] or 0);invalid_books=int(row['invalid_books'] or 0);ineligible=int(row['ineligible'] or 0);quote_candidates=int(row['quote_candidates'] or 0);quote_ready=int(row['quote_ready'] or 0);last=row['last'];last_value=last.isoformat() if hasattr(last,'isoformat') else last;stale=not last or (datetime.now(timezone.utc)-last).total_seconds()>300
+  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'observed_snapshots':total+ineligible,'ineligible_observations':ineligible,'quality_window_seconds':window,'missing_required_fields':invalid,'invalid_observations':invalid,'invalid_books':invalid_books,'invalid_reasons':{row['reason']:row['count'] for row in reason_rows},'ineligible_reasons':{row['reason']:row['count'] for row in ineligible_rows},'quote_candidates':quote_candidates,'quote_ready':quote_ready,'book_coverage':0 if not quote_candidates else quote_ready/quote_candidates,'last_observed_at':last_value,'stale':stale}
  def status(self):
   with self.db.connection() as c:last=c.execute('SELECT MAX(observed_at) AS last FROM market_observations').fetchone()['last']
   return {'snapshots':self.count(),'distinct_markets':self.distinct_markets(),'last_observed_at':last.isoformat() if hasattr(last,'isoformat') else last,'quality':self.quality(),'worker':self.worker_health()}

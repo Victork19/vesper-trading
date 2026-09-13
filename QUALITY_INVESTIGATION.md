@@ -61,6 +61,10 @@ list-markets API reference](https://docs.polymarket.com/api-reference/markets/li
    explicit opt-out.
 8. Corrected executable-book validation to require YES and NO asks, not bids.
    Crossed books, missing asks, and incoherent timestamps remain rejected.
+9. Reclassified quote-unavailable snapshots as ineligible rather than corrupt.
+   Quality now measures valid quote-ready observations, while
+   `book_coverage`, `quote_candidates`, and `quote_ready` preserve the real
+   availability signal. Live readiness still requires quote coverage.
 
 The score still penalizes an eligible market with a missing/invalid book. That
 is intentional: those markets are executable candidates, so their data must
