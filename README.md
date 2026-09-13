@@ -56,6 +56,9 @@ Recommended backend settings:
 DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
 AUTO_PAPER_ENABLED=true
 AUTO_PAPER_DECISIONS_PER_TICK=3
+AUTO_PAPER_EXPLORATION_ENABLED=true
+AUTO_PAPER_EXPLORATION_MAX_PER_TICK=2
+AUTO_PAPER_EXPLORATION_SIZE=.01
 AUTO_PAPER_MARKET_COOLDOWN_SECONDS=21600
 AUTO_PAPER_MAX_PER_TYPE_PER_TICK=1
 AUTO_PAPER_STRATEGY=reference_class
@@ -134,13 +137,18 @@ for a terminal market, and settles only markets that are closed/resolved with an
 the same path as manual `/outcomes` submissions. Configure `RESOLUTION_BATCH_SIZE` to control the maximum number checked
 per pipeline tick (default `25`). Ambiguous, unresolved, manual, or unavailable markets remain pending.
 
-With `AUTO_PAPER_ENABLED=true` (the default), the pipeline also evaluates a small rotating set of liquid markets in paper
-mode. It fetches a fresh CLOB book, avoids recently evaluated markets, prioritizes markets nearest to resolution, records
-no-trade evaluations without fabricating edge, and only creates paper exposure when the configured evidence produces a
-genuine edge. Tune it with `AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_COOLDOWN_SECONDS`,
-`AUTO_PAPER_MAX_PER_TYPE_PER_TICK`, `AUTO_PAPER_MIN_RESOLUTION_HOURS`, `AUTO_PAPER_MAX_RESOLUTION_HOURS`, and
-`AUTO_PAPER_PREFER_FAST_MARKETS`. Five-minute markets can increase sample throughput, but they require liquid books and
-should be evaluated with realistic latency and slippage assumptions.
+With `AUTO_PAPER_ENABLED=true` (the default), the pipeline evaluates a small rotating set of liquid markets in paper
+mode. It fetches a fresh CLOB book, avoids recently evaluated markets, and prioritizes markets nearest to resolution.
+The reference strategy records no-trade evaluations unless a genuine probability edge survives costs. When that strategy
+has no edge, the separate `paper_exploration` strategy can place a tiny fixed-size quote-selection sample when
+`AUTO_PAPER_EXPLORATION_ENABLED=true` (the default). Exploration positions are explicitly marked
+`paper_exploration_v1`, are excluded from research reports, calibration, live-readiness samples and the 100-outcome gate,
+but still use real paper fills, settlement, PnL, scars and operational diagnostics. Tune its safety cap with
+`AUTO_PAPER_EXPLORATION_MAX_PER_TICK` and `AUTO_PAPER_EXPLORATION_SIZE`; tune discovery with
+`AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_COOLDOWN_SECONDS`, `AUTO_PAPER_MAX_PER_TYPE_PER_TICK`,
+`AUTO_PAPER_MIN_RESOLUTION_HOURS`, `AUTO_PAPER_MAX_RESOLUTION_HOURS`, and `AUTO_PAPER_PREFER_FAST_MARKETS`.
+Five-minute markets can increase sample throughput, but they require liquid books and realistic latency/slippage
+assumptions.
 
 Fast-only mode is a hard constraint when `FAST_MARKETS_ONLY=true` (the default). `AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS=1`
 limits autonomous exposure to markets resolving within one hour. Slower markets are excluded before autonomous evaluation,

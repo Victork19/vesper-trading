@@ -190,6 +190,7 @@ class DecisionRequest(BaseModel):
  market:MarketInput
  strategy_id:str='reference_class'
  execute:bool=False
+ exploration:bool=False
  flow_imbalance:float=Field(default=0,ge=-1,le=1)
  large_wallet_signal:float=Field(default=0,ge=0,le=1)
  evidence_complete:bool=True

@@ -169,7 +169,7 @@ def recover_submission_intents(memory, service=None):
 def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
  enabled=os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true'
  if not enabled or memory.hot().mode!=Mode.PAPER:return {'enabled':enabled,'evaluated':0,'traded':0,'skipped':0,'reason':'disabled_or_not_paper'}
- limit=max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3')));cooldown=max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')));type_cap=max(1,int(os.getenv('AUTO_PAPER_MAX_PER_TYPE_PER_TICK','1')));min_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));configured_max=max(min_hours,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24')));fast_only=fast_markets_only();fast_max=_fast_max_hours();max_hours=min(configured_max,fast_max) if fast_only else configured_max;prefer_fast=os.getenv('AUTO_PAPER_PREFER_FAST_MARKETS','true').lower()=='true'
+ limit=max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3')));cooldown=max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')));type_cap=max(1,int(os.getenv('AUTO_PAPER_MAX_PER_TYPE_PER_TICK','1')));exploration_enabled=os.getenv('AUTO_PAPER_EXPLORATION_ENABLED','true').lower()=='true';exploration_limit=max(0,int(os.getenv('AUTO_PAPER_EXPLORATION_MAX_PER_TICK','2')));min_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));configured_max=max(min_hours,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24')));fast_only=fast_markets_only();fast_max=_fast_max_hours();max_hours=min(configured_max,fast_max) if fast_only else configured_max;prefer_fast=os.getenv('AUTO_PAPER_PREFER_FAST_MARKETS','true').lower()=='true'
  now=datetime.now(timezone.utc);recent={};pending_markets=set()
  for decision in memory.decisions():
   if decision.source.startswith('polymarket'):
@@ -178,7 +178,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
     created=datetime.fromisoformat(decision.created_at.replace('Z','+00:00'))
     if decision.market_id not in recent or created>recent[decision.market_id]:recent[decision.market_id]=created
    except ValueError:continue
- type_counts={};evaluated=traded=skipped=0;horizon_skipped=0;candidate_count=0;page_size=max(50,min(100,int(os.getenv('AUTO_PAPER_MARKET_PAGE_SIZE','100'))));pages=max(1,min(10,int(os.getenv('AUTO_PAPER_MARKET_PAGES','5'))));items=[]
+ type_counts={};evaluated=traded=exploration_traded=skipped=0;horizon_skipped=0;candidate_count=0;page_size=max(50,min(100,int(os.getenv('AUTO_PAPER_MARKET_PAGE_SIZE','100'))));pages=max(1,min(10,int(os.getenv('AUTO_PAPER_MARKET_PAGES','5'))));items=[]
  for page in range(pages):
   # Gamma's default ordering is dominated by long-dated markets. Request
   # nearest-expiry ordering so five-minute BTC/ETH and similar markets are
@@ -238,9 +238,16 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
   except Exception as exc:skipped+=1;log.warning('autonomous paper evaluation failed market=%s error=%s',market_id,exc);continue
   evaluated+=1;type_counts[selection_type]=type_counts.get(selection_type,0)+1;recent[market_id]=now
   if decision.size>0:traded+=1;pending_markets.add(market_id)
-  log.info('autonomous paper evaluation market=%s horizon_hours=%.3f bucket=%s action=%s size=%.6f edge=%.6f',market_id,hours,selection_type,decision.action,decision.size,decision.edge)
- telemetry.inc('vesper_autonomous_paper_evaluations_total',value=evaluated);telemetry.inc('vesper_autonomous_paper_trades_total',value=traded);telemetry.set('vesper_autonomous_paper_enabled',1)
- return {'enabled':True,'evaluated':evaluated,'traded':traded,'skipped':skipped,'horizon_skipped':horizon_skipped,'candidates':candidate_count,'min_resolution_hours':min_hours,'max_resolution_hours':max_hours,'fast_only':fast_only,'fast_max_hours':fast_max}
+  elif exploration_enabled and exploration_traded<exploration_limit:
+   exploration_market=market_input.model_copy(deep=True);underlying_model=exploration_market.model_version or 'market_baseline_v2';exploration_market.model_version='paper_exploration_v1';exploration_market.model_provenance={'provider':'paper_exploration','version':'paper_exploration_v1','selection':'lowest executable ask','underlying_model':underlying_model,'observed_at':exploration_market.observed_at.isoformat() if exploration_market.observed_at else None}
+   exploration_request=DecisionRequest(market=exploration_market,strategy_id='paper_exploration',execute=True,evidence_complete=True,exploration=True)
+   try:exploration_decision=decide_fn(exploration_request,None)
+   except Exception as exc:log.warning('paper exploration failed market=%s error=%s',market_id,exc);exploration_decision=None
+   if exploration_decision is not None and exploration_decision.size>0:
+    decision=exploration_decision;traded+=1;exploration_traded+=1;pending_markets.add(market_id);log.info('paper exploration trade market=%s side=%s size=%.6f edge=%.6f excluded_from_research=true',market_id,decision.side,decision.size,decision.edge)
+  log.info('autonomous paper evaluation market=%s horizon_hours=%.3f bucket=%s action=%s size=%.6f edge=%.6f strategy=%s',market_id,hours,selection_type,decision.action,decision.size,decision.edge,decision.strategy_id)
+ telemetry.inc('vesper_autonomous_paper_evaluations_total',value=evaluated);telemetry.inc('vesper_autonomous_paper_trades_total',value=traded);telemetry.inc('vesper_autonomous_paper_exploration_trades_total',value=exploration_traded);telemetry.set('vesper_autonomous_paper_enabled',1);telemetry.set('vesper_autonomous_paper_exploration_enabled',int(exploration_enabled))
+ return {'enabled':True,'evaluated':evaluated,'traded':traded,'exploration_traded':exploration_traded,'skipped':skipped,'horizon_skipped':horizon_skipped,'candidates':candidate_count,'min_resolution_hours':min_hours,'max_resolution_hours':max_hours,'fast_only':fast_only,'fast_max_hours':fast_max}
 
 def run():
  if '--healthcheck' in sys.argv:
