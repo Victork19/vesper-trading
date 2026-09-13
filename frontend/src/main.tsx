@@ -130,7 +130,7 @@ function App() {
     setError(failed.length ? String(failed.length) + ' data source' + (failed.length === 1 ? '' : 's') + ' unavailable: ' + failed.join(', ') + '.' : ''); setLoading(false); setRefreshing(false);
   }, []);
   useEffect(() => { void load(); const timer = window.setInterval(() => { if (document.visibilityState === 'visible') void load(true); }, POLL_MS); return () => { window.clearInterval(timer); requestRef.current?.abort(); }; }, [load]);
-  const loadRuntimeConfig = useCallback(async () => { try { setRuntimeConfig(await api<RuntimeConfig>('/operator/config')); } catch (e) { setError(e instanceof Error ? e.message : 'Unable to load runtime settings.'); } }, []);
+  const loadRuntimeConfig = useCallback(async () => { try { setRuntimeConfig(await api<RuntimeConfig>('/operator/config')); } catch (e) { const message=e instanceof Error ? e.message : 'Unable to load runtime settings.'; if (message.includes('Insufficient session scope') || message.includes('Insufficient API scope')) { setRuntimeConfig(null); return; } setError(message); } }, []);
   useEffect(() => { if (tab === 'settings') void loadRuntimeConfig(); }, [tab, loadRuntimeConfig]);
   const post = async (path: string, body: unknown) => { setNotice(''); setError(''); try { await api(path, { method: 'POST', body: JSON.stringify(body) }); setNotice('Action accepted. Refreshing system state.'); await load(true); } catch (e) { setError(e instanceof Error ? e.message : 'Action failed.'); } };
   const logout = async () => { try { await api('/auth/session', { method: 'DELETE' }); } finally { runtimeApiKey=''; runtimeCsrf=''; sessionStorage.setItem('vesper_force_login', 'true'); window.location.reload(); } };
