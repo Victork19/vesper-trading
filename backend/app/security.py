@@ -138,3 +138,13 @@ class SecurityManager:
   if not row or not hmac.compare_digest(str(row['csrf_digest']),self._hash(csrf)):
    raise HTTPException(403,'csrf_validation_failed')
   return True
+ def session_csrf(self,token):
+  self.authenticate_session(token,'read')
+  try:
+   encoded=token.split('.',1)[0]
+   payload=json.loads(base64.urlsafe_b64decode(encoded+'='*((4-len(encoded)%4)%4)))
+   csrf=str(payload.get('csrf',''))
+   if not csrf: raise ValueError('missing csrf')
+   return csrf
+  except Exception as exc:
+   raise HTTPException(403,'csrf_validation_failed') from exc

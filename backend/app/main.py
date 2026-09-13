@@ -78,10 +78,14 @@ async def request_telemetry(request:Request,call_next):
    if request.cookies.get('vesper_session') and request.method in {'POST','PUT','PATCH','DELETE'}:
     origin=request.headers.get('origin')
     allowed={item.strip().rstrip('/') for item in os.getenv('CORS_ORIGINS','http://localhost:5173').split(',') if item.strip()}
-    if not origin or origin.rstrip('/') not in allowed:raise HTTPException(403,'Origin validation required for session state changes.')
-    csrf=request.headers.get('X-Vesper-CSRF');csrf_cookie=request.cookies.get('vesper_csrf')
-    if not csrf or not csrf_cookie or not hmac.compare_digest(csrf,csrf_cookie):raise safe_http(403,'csrf_validation_failed')
-    security.validate_session_csrf(request.cookies.get('vesper_session'),csrf)
+    if not origin or origin.rstrip('/') not in allowed:
+     response=JSONResponse({'detail':'Origin validation required for session state changes.'},status_code=403);status=403;return response
+    csrf=request.headers.get('X-Vesper-CSRF')
+    if not csrf:
+     response=JSONResponse({'detail':'csrf_validation_failed'},status_code=403);status=403;return response
+    try: security.validate_session_csrf(request.cookies.get('vesper_session'),csrf)
+    except HTTPException as exc:
+     response=JSONResponse({'detail':exc.detail},status_code=exc.status_code);status=exc.status_code;return response
   else:
    client_host=request.client.host if request.client else 'unknown'
    security.check_rate(f'unauthenticated:{client_host}',request.url.path)
@@ -105,14 +109,14 @@ def require_risk_admin(x_vesper_key:str|None=Header(default=None),vesper_session
 @app.post('/auth/session')
 def create_session(request:Request,x_vesper_key:str|None=Header(default=None)):
  token,payload=security.create_session(x_vesper_key)
- response=PlainTextResponse(json.dumps({'authenticated':True,'scope':payload['scope'],'expires_at':payload['exp']}),media_type='application/json')
+ response=PlainTextResponse(json.dumps({'authenticated':True,'scope':payload['scope'],'expires_at':payload['exp'],'csrf':payload['csrf']}),media_type='application/json')
  response.set_cookie('vesper_session',token,max_age=settings.session_ttl_seconds,httponly=True,secure=settings.cookie_secure or request.url.scheme=='https',samesite=settings.cookie_samesite,path='/')
  response.set_cookie('vesper_csrf',payload['csrf'],max_age=settings.session_ttl_seconds,httponly=False,secure=settings.cookie_secure or request.url.scheme=='https',samesite=settings.cookie_samesite,path='/')
  return response
 
 @app.get('/auth/session')
 def session_status(vesper_session:str|None=Cookie(default=None),x_vesper_key:str|None=Header(default=None)):
- principal=security.authenticate_session(vesper_session,'read') if vesper_session else security.authenticate(x_vesper_key,'read');return {'authenticated':True,'key_id':principal.key_id,'scope':principal.scope}
+ principal=security.authenticate_session(vesper_session,'read') if vesper_session else security.authenticate(x_vesper_key,'read');return {'authenticated':True,'key_id':principal.key_id,'scope':principal.scope,'csrf':security.session_csrf(vesper_session) if vesper_session else None}
 
 @app.delete('/auth/session')
 def delete_session(vesper_session:str|None=Cookie(default=None)):

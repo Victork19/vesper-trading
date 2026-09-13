@@ -7,6 +7,7 @@ import './styles.css';
 const API_URL = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
 const CONFIGURED_API_KEY = String(import.meta.env.VITE_API_KEY || '').trim();
 let runtimeApiKey = '';
+let runtimeCsrf = '';
 const OPERATOR_CONTROLS = import.meta.env.VITE_ENABLE_OPERATOR_CONTROLS === 'true';
 const POLL_MS = 30_000;
 
@@ -54,11 +55,11 @@ async function api<T>(path: string, options: RequestInit = {}, signal?: AbortSig
     const method = String(options.method || 'GET').toUpperCase();
     const requestHeaders = new Headers(options.headers);
     requestHeaders.set('Accept', 'application/json');
-    const hasSessionCookie = document.cookie.split('; ').some(item => item.startsWith('vesper_csrf='));
-    if ((runtimeApiKey || CONFIGURED_API_KEY) && !hasSessionCookie && !requestHeaders.has('X-Vesper-Key')) requestHeaders.set('X-Vesper-Key', runtimeApiKey || CONFIGURED_API_KEY);
+    const csrfCookie = document.cookie.split('; ').find(item => item.startsWith('vesper_csrf='))?.split('=').slice(1).join('=');
+    const csrf = runtimeCsrf || csrfCookie || '';
+    if ((runtimeApiKey || CONFIGURED_API_KEY) && !csrf && !requestHeaders.has('X-Vesper-Key')) requestHeaders.set('X-Vesper-Key', runtimeApiKey || CONFIGURED_API_KEY);
     if (method === 'GET' || method === 'HEAD') requestHeaders.delete('Content-Type');
     else requestHeaders.set('Content-Type', 'application/json');
-    const csrf = document.cookie.split('; ').find(item => item.startsWith('vesper_csrf='))?.split('=').slice(1).join('=');
     if (method !== 'GET' && method !== 'HEAD') requestHeaders.set('X-Vesper-CSRF', decodeURIComponent(csrf || ''));
     const response = await fetch(`${API_URL}${path}`, { ...options, credentials: 'include', signal: controller.signal, headers: requestHeaders });
     const text = await response.text();
@@ -97,7 +98,7 @@ function readTab(): Tab { const value = window.location.hash.replace('#/', '') a
 
 function SessionGate({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<'checking' | 'login' | 'ready'>('checking');
-  useEffect(() => { if (sessionStorage.getItem('vesper_force_login') === 'true') { setState('login'); return; } api('/auth/session').then(() => setState('ready')).catch(() => setState('login')); }, []);
+  useEffect(() => { if (sessionStorage.getItem('vesper_force_login') === 'true') { setState('login'); return; } api<{ csrf?: string }>('/auth/session').then(session => { runtimeCsrf = session.csrf || ''; setState('ready'); }).catch(() => setState('login')); }, []);
   if (state === 'checking') return <div className="auth-screen"><div className="auth-card"><div className="brand-mark">V</div><h1>Connecting to Vesper</h1><p>Verifying your secure session…</p></div></div>;
   if (state === 'login') return <LoginScreen onAuthenticated={() => setState('ready')} />;
   return <>{children}</>;
@@ -105,7 +106,7 @@ function SessionGate({ children }: { children: React.ReactNode }) {
 
 function LoginScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
   const [key, setKey] = useState(''); const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  const submit = async (event: React.FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { if (!API_URL) throw new Error('Set VITE_API_URL before signing in.'); const response = await fetch(`${API_URL}/auth/session`, { method: 'POST', credentials: 'include', headers: { 'X-Vesper-Key': key.trim(), Accept: 'application/json' } }); if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(String(body.detail || `Sign-in failed (${response.status})`)); } runtimeApiKey=key.trim(); sessionStorage.removeItem('vesper_force_login'); setKey(''); onAuthenticated(); } catch (e) { setError(e instanceof TypeError && /fetch/i.test(e.message) ? `Unable to reach the Vesper API at ${API_URL}. Check VITE_API_URL and backend CORS_ORIGINS.` : e instanceof Error ? e.message : 'Sign-in failed.'); } finally { setBusy(false); } };
+  const submit = async (event: React.FormEvent) => { event.preventDefault(); setBusy(true); setError(''); try { if (!API_URL) throw new Error('Set VITE_API_URL before signing in.'); const response = await fetch(`${API_URL}/auth/session`, { method: 'POST', credentials: 'include', headers: { 'X-Vesper-Key': key.trim(), Accept: 'application/json' } }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(String(body.detail || `Sign-in failed (${response.status})`)); runtimeApiKey=key.trim(); runtimeCsrf=String(body.csrf || ''); sessionStorage.removeItem('vesper_force_login'); setKey(''); onAuthenticated(); } catch (e) { setError(e instanceof TypeError && /fetch/i.test(e.message) ? `Unable to reach the Vesper API at ${API_URL}. Check VITE_API_URL and backend CORS_ORIGINS.` : e instanceof Error ? e.message : 'Sign-in failed.'); } finally { setBusy(false); } };
   return <div className="auth-screen"><form className="auth-card" onSubmit={submit}><div className="brand-mark">V</div><div className="eyebrow">VESPER TRADING / SECURE SESSION</div><h1>Enter your access key</h1><p>Your key is exchanged once for an HttpOnly backend session. It is never stored in the frontend bundle.</p><label className="field"><span>Vesper access key</span><input type="password" autoComplete="current-password" value={key} onChange={e => setKey(e.target.value)} required placeholder="Paste access key" /></label>{error && <div className="auth-error" role="alert"><AlertTriangle size={16} />{error}</div>}<button className="primary-button auth-submit" disabled={busy || !key.trim()}>{busy ? 'Signing in…' : 'Create secure session'}</button><small className="auth-foot">Sessions expire automatically. Admin scope is enforced by the backend.</small></form></div>;
 }
 
@@ -129,7 +130,7 @@ function App() {
   const loadRuntimeConfig = useCallback(async () => { try { setRuntimeConfig(await api<RuntimeConfig>('/operator/config')); } catch (e) { setError(e instanceof Error ? e.message : 'Unable to load runtime settings.'); } }, []);
   useEffect(() => { if (tab === 'settings') void loadRuntimeConfig(); }, [tab, loadRuntimeConfig]);
   const post = async (path: string, body: unknown) => { setNotice(''); setError(''); try { await api(path, { method: 'POST', body: JSON.stringify(body) }); setNotice('Action accepted. Refreshing system state.'); await load(true); } catch (e) { setError(e instanceof Error ? e.message : 'Action failed.'); } };
-  const logout = async () => { try { await api('/auth/session', { method: 'DELETE' }); } finally { runtimeApiKey=''; sessionStorage.setItem('vesper_force_login', 'true'); window.location.reload(); } };
+  const logout = async () => { try { await api('/auth/session', { method: 'DELETE' }); } finally { runtimeApiKey=''; runtimeCsrf=''; sessionStorage.setItem('vesper_force_login', 'true'); window.location.reload(); } };
   const selectedMarket = useMemo(() => snapshot.hot.filter(m => !marketQuery || `${m.question || ''} ${marketId(m)}`.toLowerCase().includes(marketQuery.toLowerCase()))[0], [snapshot.hot, marketQuery]);
   const decide = async () => { const id = selectedMarket ? marketId(selectedMarket) : ''; try { const live = id ? await api<MarketInput>(`/markets/input/${encodeURIComponent(id)}`) : null; const market = live || { market_id: 'manual-paper-market', question: 'Manual paper decision', market_type: 'custom', liquidity: 0, volume_24h: 0, price: Number(price), reference_rate: Number(price), signals: {}, source: 'manual' }; await post('/decide', { market, strategy_id: 'reference_class', flow_imbalance: Number(flow), execute: true }); } catch (e) { setError(e instanceof Error ? e.message : 'Unable to load the live market input.'); } };
   const { dashboard, obs } = snapshot; const mode = dashboard.mode || 'paper'; const quality = ingestionQuality(obs); const workerHealthy = obs.worker?.status === 'healthy'; const meta = pageMeta[tab];
