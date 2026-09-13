@@ -1,4 +1,4 @@
-import threading,uuid
+import os,threading,uuid
 from contextlib import contextmanager
 from datetime import datetime,timezone,timedelta
 from .db import PostgresDatabase
