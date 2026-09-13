@@ -78,6 +78,7 @@ class OutcomeResolver:
                 resolved_yes = parse_terminal_resolution(market)
                 if resolved_yes is None:
                     unresolved += len(by_market[market_id])
+                    log.info('resolution pending market=%s closed=%s resolved=%s resolution=%s winner=%s outcomes=%s outcomePrices=%s endDate=%s',market_id,market.get('closed'),market.get('resolved'),market.get('resolution'),market.get('winner') or market.get('winningOutcome') or market.get('finalOutcome'),market.get('outcomes'),market.get('outcomePrices'),market.get('endDate') or market.get('end_date'))
                     self._record_retry(market_id,'market_not_terminal')
                     continue
                 for decision in by_market[market_id]:

@@ -162,7 +162,14 @@ def settle_decision(
 
 def parse_terminal_resolution(market: dict[str, Any]) -> bool | None:
     """Return the resolved YES/NO result only when the market is unambiguously terminal."""
-    resolved = market.get("resolved") is True or str(market.get("resolved", "")).lower() == "true" or market.get("resolution") not in (None, "", False)
+    uma_status = str(market.get("umaResolutionStatus") or market.get("umaResolutionStatuses") or "").strip().lower()
+    resolved = (
+        market.get("resolved") is True
+        or str(market.get("resolved", "")).lower() == "true"
+        or market.get("resolution") not in (None, "", False)
+        or market.get("automaticallyResolved") is True
+        or uma_status in {"resolved", "resolved_by_uma", "settled", "finalized"}
+    )
     if not resolved and market.get("closed") is not True:
         return None
 
