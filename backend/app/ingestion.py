@@ -113,12 +113,14 @@ class IngestionStore:
   with self.db.connection() as c:
    if error:c.execute('UPDATE pipeline_health SET last_tick_at=%s,last_error_at=%s,last_error=%s,error_count=error_count+1 WHERE id=1',(now,now,str(error)))
    else:c.execute('UPDATE pipeline_health SET last_tick_at=%s,last_success_at=%s,last_error=NULL,last_markets=%s,last_books=%s WHERE id=1',(now,now,markets,books))
+ def record_progress(self):
+  with self.db.connection() as c:c.execute('UPDATE pipeline_health SET last_tick_at=%s WHERE id=1',(datetime.now(timezone.utc),))
  def record_resolution(self,result):
   with self.db.connection() as c:c.execute('UPDATE pipeline_health SET last_resolution_at=%s,last_resolved=%s,last_resolution_errors=%s,last_pending=%s WHERE id=1',(datetime.now(timezone.utc),result.get('settled',0),result.get('errors',0),result.get('pending',0)))
  def worker_health(self):
   with self.db.connection() as c:r=c.execute('SELECT last_tick_at,last_success_at,last_error_at,last_error,error_count,last_markets,last_books,last_resolution_at,last_resolved,last_resolution_errors,last_pending FROM pipeline_health WHERE id=1').fetchone()
   if not r:return {'status':'unknown'}
-  data=dict(r);last=data.get('last_success_at') or data.get('last_tick_at');data['last_tick_at']=data['last_tick_at'].isoformat() if hasattr(data['last_tick_at'],'isoformat') else data['last_tick_at'];data['last_success_at']=data['last_success_at'].isoformat() if hasattr(data['last_success_at'],'isoformat') else data['last_success_at'];data['last_resolution_at']=data['last_resolution_at'].isoformat() if hasattr(data['last_resolution_at'],'isoformat') else data['last_resolution_at'];data['stale']=not last or (datetime.now(timezone.utc)-last).total_seconds()>180;data['status']='degraded' if data['stale'] or data.get('last_error') else 'healthy';return data
+  data=dict(r);last=data.get('last_tick_at') or data.get('last_success_at');data['last_tick_at']=data['last_tick_at'].isoformat() if hasattr(data['last_tick_at'],'isoformat') else data['last_tick_at'];data['last_success_at']=data['last_success_at'].isoformat() if hasattr(data['last_success_at'],'isoformat') else data['last_success_at'];data['last_resolution_at']=data['last_resolution_at'].isoformat() if hasattr(data['last_resolution_at'],'isoformat') else data['last_resolution_at'];data['stale']=not last or (datetime.now(timezone.utc)-last).total_seconds()>max(60,int(os.getenv('PIPELINE_HEALTH_MAX_AGE_SECONDS','180')));data['status']='degraded' if data['stale'] or data.get('last_error') else 'healthy';return data
 
 class IngestionRunner:
  def __init__(self):self.data=PolymarketData();self.store=IngestionStore();self.resolver=OutcomeResolver(data=self.data)
@@ -135,6 +137,7 @@ class IngestionRunner:
     telemetry.inc('vesper_ingestion_ticks_skipped_total',labels={'reason':'pipeline_lease_busy'})
     return {'markets':0,'books':0,'new_snapshots':0,'observations':self.store.count(),'resolution':{'skipped':True,'reason':'pipeline_lease_busy'}}
    items=self.research_markets(limit);saved=0;books=0;telemetry.inc('vesper_ingestion_ticks_total');telemetry.set('vesper_ingestion_research_markets',int(os.getenv('FAST_MARKETS_ONLY','true').lower()=='true'))
+   self.store.record_progress()
    for item in items:
     enriched=dict(item);yes_token,no_token=self.data.token_pair(item)
     if str(item.get('enableOrderBook','true')).strip().lower() in ('false','0','no'):
@@ -147,6 +150,7 @@ class IngestionRunner:
      try:no_book=self.data.book(no_token);enriched['_vesper_no_book']=no_book.model_dump();books+=1
      except Exception as exc:enriched['_vesper_no_book_error']=str(exc);telemetry.error('book_fetch')
     saved+=int(self.store.save(enriched))
+    self.store.record_progress()
    self.store.record_heartbeat(len(items),books)
   # Release the pipeline lease before resolution. Resolution takes a
   # decision lock and then a portfolio lock; keeping the lease connection

@@ -454,10 +454,10 @@ def observability(_=Depends(require_api_key)):
  q=ingestion_store.quality();worker=ingestion_store.worker_health();telemetry.set('vesper_ingestion_quality_score',q['score']);telemetry.set('vesper_ingestion_stale',int(q['stale']));telemetry.set('vesper_worker_stale',int(worker.get('stale',True)));return {'telemetry':telemetry.snapshot(),'ingestion':q,'worker':worker,'ready':_readiness_payload()}
 @app.get('/alerts')
 def alerts(_=Depends(require_api_key)):
- q=ingestion_store.quality();worker=ingestion_store.worker_health();snap=telemetry.snapshot();items=[]
+ q=ingestion_store.quality();worker=ingestion_store.worker_health();snap=telemetry.snapshot();h=memory.hot();items=[]
  if q['stale']:items.append({'severity':'critical','code':'MARKET_DATA_STALE','message':'No fresh market observations within the freshness window.'})
  if q['score']<settings.min_data_quality:items.append({'severity':'warning','code':'MARKET_DATA_QUALITY_LOW','message':f"Market-data quality is {q['score']:.3f}."})
- if q.get('book_coverage',0)<settings.min_data_quality:items.append({'severity':'warning','code':'MARKET_BOOK_COVERAGE_LOW','message':f"Executable YES/NO ask coverage is {q.get('book_coverage',0):.3f}."})
+ if h.mode!=Mode.PAPER and q.get('book_coverage',0)<settings.min_data_quality:items.append({'severity':'warning','code':'MARKET_BOOK_COVERAGE_LOW','message':f"Executable YES/NO ask coverage is {q.get('book_coverage',0):.3f}."})
  if worker.get('stale'):items.append({'severity':'critical','code':'INGESTION_WORKER_STALE','message':'The ingestion worker has not reported a successful heartbeat recently.'})
  if snap['recent_errors_5m']>=5:items.append({'severity':'critical','code':'ERROR_BURST','message':f"{snap['recent_errors_5m']} errors observed in five minutes."})
  return {'active':items,'count':len(items),'generated_at':now_iso()}
