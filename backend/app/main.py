@@ -111,8 +111,8 @@ def create_session(request:Request,x_vesper_key:str|None=Header(default=None)):
  return response
 
 @app.get('/auth/session')
-def session_status(vesper_session:str|None=Cookie(default=None)):
- principal=security.authenticate_session(vesper_session,'read');return {'authenticated':True,'key_id':principal.key_id,'scope':principal.scope}
+def session_status(vesper_session:str|None=Cookie(default=None),x_vesper_key:str|None=Header(default=None)):
+ principal=security.authenticate_session(vesper_session,'read') if vesper_session else security.authenticate(x_vesper_key,'read');return {'authenticated':True,'key_id':principal.key_id,'scope':principal.scope}
 
 @app.delete('/auth/session')
 def delete_session(vesper_session:str|None=Cookie(default=None)):
