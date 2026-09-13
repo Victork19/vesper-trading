@@ -1,6 +1,6 @@
 import hashlib,json,os,threading
 from contextlib import contextmanager
-from datetime import datetime,timezone
+from datetime import datetime,timedelta,timezone
 from .db import PostgresDatabase
 from .market_data import PolymarketData,binary_token_pair
 from .observability import telemetry
@@ -11,7 +11,7 @@ from .models import EventQuality
 class IngestionStore:
  def __init__(self,database=None,path=None):self.db=database or PostgresDatabase();self.require_books=os.getenv('INGEST_REQUIRE_BOOKS','true').lower()=='true';self.require_both_books=os.getenv('INGEST_REQUIRE_BOTH_BOOKS','true').lower()=='true';self.quality_window_seconds=max(300,int(os.getenv('DATA_QUALITY_WINDOW_SECONDS','1800')));self.lock=threading.RLock()
  def eligibility_reason(self,market):
-  if market.get('enableOrderBook') is False:return 'order_book_disabled'
+  if str(market.get('enableOrderBook','true')).strip().lower() in ('false','0','no'):return 'order_book_disabled'
   yes,no=binary_token_pair(market)
   return None if yes and no else 'unsupported_outcome_labels'
  def book_skew_seconds(self,market):
@@ -114,15 +114,22 @@ class IngestionStore:
 
 class IngestionRunner:
  def __init__(self):self.data=PolymarketData();self.store=IngestionStore();self.resolver=OutcomeResolver(data=self.data)
+ def research_markets(self,limit):
+  if os.getenv('FAST_MARKETS_ONLY','true').lower()!='true':
+   return self.data.markets(limit)
+  now=datetime.now(timezone.utc)
+  minimum_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')))
+  maximum_hours=max(minimum_hours,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1')))
+  return self.data.markets(limit,order='endDate',ascending=True,closed=False,end_date_min=(now+timedelta(hours=minimum_hours)).isoformat().replace('+00:00','Z'),end_date_max=(now+timedelta(hours=maximum_hours)).isoformat().replace('+00:00','Z'))
  def tick(self,limit=50):
   with self.store.pipeline_lease() as acquired:
    if not acquired:
     telemetry.inc('vesper_ingestion_ticks_skipped_total',labels={'reason':'pipeline_lease_busy'})
     return {'markets':0,'books':0,'new_snapshots':0,'observations':self.store.count(),'resolution':{'skipped':True,'reason':'pipeline_lease_busy'}}
-   items=self.data.markets(limit);saved=0;books=0;telemetry.inc('vesper_ingestion_ticks_total')
+   items=self.research_markets(limit);saved=0;books=0;telemetry.inc('vesper_ingestion_ticks_total');telemetry.set('vesper_ingestion_research_markets',int(os.getenv('FAST_MARKETS_ONLY','true').lower()=='true'))
    for item in items:
     enriched=dict(item);yes_token,no_token=self.data.token_pair(item)
-    if item.get('enableOrderBook') is False:
+    if str(item.get('enableOrderBook','true')).strip().lower() in ('false','0','no'):
      saved+=int(self.store.save(enriched))
      continue
     if yes_token:

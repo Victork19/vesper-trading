@@ -8,6 +8,13 @@ market returned by Gamma. That included discovery-only markets that cannot be
 used by this YES/NO CLOB pipeline, plus stale historical failures that never
 left the denominator.
 
+There was also a universe mismatch: the ordinary ingestion tick requested the
+first broad active-market page, while the autonomous research loop requested
+markets resolving within the configured fast-market horizon. The ordinary page
+was dominated by long-dated markets, including the political markets visible
+in the dashboard, so its book coverage was not representative of the research
+universe.
+
 Polymarket exposes market outcomes and CLOB token IDs as aligned arrays, and
 the CLOB is only applicable to markets with an enabled order book. The
 pipeline therefore needs to distinguish an ineligible market from an eligible
@@ -44,6 +51,9 @@ list-markets API reference](https://docs.polymarket.com/api-reference/markets/li
 5. Avoided CLOB requests for markets whose order book is disabled.
 6. Added migration `0013_ingestion_quality_scope.sql` and documented
    `DATA_QUALITY_WINDOW_SECONDS`.
+7. Made normal ingestion use the same fast-market time window as the research
+   loop when `FAST_MARKETS_ONLY=true` (the default), while preserving an
+   explicit opt-out.
 
 The score still penalizes an eligible market with a missing/invalid book. That
 is intentional: those markets are executable candidates, so their data must
@@ -75,4 +85,3 @@ unset KEY
 
 The important fields are `score`, `snapshots`, `observed_snapshots`,
 `ineligible_observations`, `invalid_reasons`, and `book_coverage`.
-
