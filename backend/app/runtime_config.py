@@ -7,6 +7,9 @@ CONFIG_SCHEMA = {
  'PIPELINE_INTERVAL_SECONDS': {'label':'Pipeline interval', 'description':'Seconds between ingestion cycles.', 'type':'number', 'default':60, 'min':5, 'max':3600, 'group':'Worker'},
  'PIPELINE_MAX_BACKOFF_SECONDS': {'label':'Maximum retry backoff', 'description':'Maximum delay after an external or database failure.', 'type':'number', 'default':900, 'min':30, 'max':86400, 'group':'Worker'},
  'AUTO_PAPER_ENABLED': {'label':'Autonomous paper loop', 'description':'Evaluate eligible markets automatically in paper mode.', 'type':'boolean', 'default':True, 'group':'Research'},
+ 'AUTO_PAPER_MULTI_STRATEGY_ENABLED': {'label':'Automatic strategy tournament', 'description':'Rotate eligible paper markets across the benchmark, fast model, and hybrid ensemble.', 'type':'boolean', 'default':True, 'group':'Research'},
+ 'AUTO_PAPER_ENSEMBLE_FAST_WEIGHT': {'label':'Hybrid fast-model weight', 'description':'Starting weight for the independent fast-market forecast; resolved results can adjust it.', 'type':'number', 'default':0.60, 'min':0.10, 'max':0.90, 'group':'Research'},
+ 'AUTO_PAPER_ENSEMBLE_MIN_SKILL_SAMPLES': {'label':'Minimum results before adapting', 'description':'Resolved research results required for each model before hybrid weighting adapts.', 'type':'number', 'default':5, 'min':3, 'max':1000, 'group':'Research'},
  'AUTO_PAPER_DECISIONS_PER_TICK': {'label':'Decisions per tick', 'description':'Maximum autonomous evaluations per ingestion cycle.', 'type':'number', 'default':3, 'min':1, 'max':50, 'group':'Research'},
  'AUTO_PAPER_EXPLORATION_ENABLED': {'label':'Paper exploration enabled', 'description':'Place tiny exploratory paper positions separately from research evidence.', 'type':'boolean', 'default':True, 'group':'Research'},
  'AUTO_PAPER_EXPLORATION_MAX_PER_TICK': {'label':'Exploration trades per tick', 'description':'Maximum fixed-size exploration positions per ingestion cycle.', 'type':'number', 'default':2, 'min':0, 'max':20, 'group':'Research'},
@@ -23,7 +26,7 @@ CONFIG_SCHEMA = {
  'MAX_MARKET_EXPOSURE': {'label':'Market exposure cap', 'description':'Maximum exposure allocated to one market.', 'type':'number', 'default':0.05, 'min':0.001, 'max':0.25, 'group':'Risk'},
  'PAPER_QUEUE_FILL_FACTOR': {'label':'Paper queue fill factor', 'description':'Conservative fraction of displayed size assumed filled.', 'type':'number', 'default':0.85, 'min':0.05, 'max':1, 'group':'Execution assumptions'},
  'PAPER_LATENCY_SLIPPAGE_BPS': {'label':'Paper latency slippage', 'description':'Synthetic latency slippage used in paper fills.', 'type':'number', 'default':5, 'min':0, 'max':100, 'group':'Execution assumptions'},
- 'AUTO_PAPER_STRATEGY': {'label':'Autonomous strategy', 'description':'Strategy used for autonomous paper decisions.', 'type':'select', 'default':'reference_class', 'options':['reference_class','relative_microstructure'], 'group':'Strategy'},
+ 'AUTO_PAPER_STRATEGY': {'label':'Fallback paper strategy', 'description':'Strategy used only when the automatic tournament is disabled.', 'type':'select', 'default':'reference_class', 'options':['reference_class','fast_model','hybrid_ensemble','relative_microstructure'], 'group':'Strategy'},
  'EXPERIMENTAL_STRATEGY_ENABLED': {'label':'Experimental strategy enabled', 'description':'Allows the experimental strategy to be selected; it remains evidence-gated.', 'type':'boolean', 'default':False, 'group':'Strategy'},
 }
 

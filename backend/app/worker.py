@@ -1,4 +1,4 @@
-import json,os,time,logging,signal,threading,uuid,sys
+import hashlib,json,os,time,logging,signal,threading,uuid,sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime,timedelta,timezone
 from .ingestion import IngestionRunner
@@ -6,6 +6,7 @@ from .models import DecisionRequest,Mode,OrderStatus,OrderRecord
 from .fast_probability import FastMarketProbability,market_asset
 from .market_policy import fast_markets_only,fast_max_resolution_hours,fast_market_allowed
 from .observability import telemetry
+from .ensemble import hybrid_forecast
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'));log=logging.getLogger('vesper.pipeline')
 def _number(value,default=None):
  try:return float(value) if value not in (None,'') else default
@@ -23,7 +24,7 @@ def _fast_max_hours():
 def _generic_market_baseline(memory,market_input):
  cutoff=market_input.observed_at or datetime.now(timezone.utc);outcomes=[]
  for d in memory.decisions():
-  if d.market_type!=market_input.market_type or d.resolved_yes is None or d.outcome in ('pending','void'):continue
+  if d.market_type!=market_input.market_type or d.resolved_yes is None or d.outcome in ('pending','void') or not d.research_eligible:continue
   try:
    created=datetime.fromisoformat(str(d.created_at).replace('Z','+00:00'));resolved=datetime.fromisoformat(str(d.resolved_at).replace('Z','+00:00')) if d.resolved_at else None
    if resolved is None or created>=cutoff or resolved>cutoff:continue
@@ -31,6 +32,26 @@ def _generic_market_baseline(memory,market_input):
   outcomes.append(1 if d.resolved_yes else 0)
  samples=len(outcomes);empirical=sum(outcomes)/samples if samples else market_input.price;weight=min(.55,samples/(samples+60));probability=max(.01,min(.99,market_input.price*(1-weight)+empirical*weight));uncertainty=max(.12,min(.49,.45/(max(1,samples)**.5)))
  return {'model_version':'market_baseline_v2','raw_probability':market_input.price,'probability':probability,'lower_bound':max(.01,probability-uncertainty),'upper_bound':min(.99,probability+uncertainty),'uncertainty':uncertainty,'calibration_samples':samples,'calibration_status':'usable' if samples>=20 else 'warming','regime':'baseline','asset':'market','direction':'market'}
+
+def _apply_forecast(market_input,forecast):
+ market_input.reference_rate=forecast['probability'];market_input.raw_model_probability=forecast.get('raw_probability',forecast['probability']);market_input.model_probability=forecast['probability'];market_input.model_version=forecast['model_version'];market_input.model_provenance={'provider':'vesper_strategy_tournament','version':forecast['model_version'],'components':forecast.get('components',[]),'weighting':forecast.get('weighting',{}),'calibration_samples':forecast.get('calibration_samples',0),'observed_at':market_input.observed_at.isoformat() if market_input.observed_at else None};market_input.model_lower_bound=forecast['lower_bound'];market_input.model_upper_bound=forecast['upper_bound'];market_input.model_uncertainty=forecast['uncertainty'];market_input.model_calibration_samples=forecast.get('calibration_samples',0);market_input.model_calibration_status=forecast.get('calibration_status','warming');market_input.signals={}
+
+def _strategy_arms(fast_available):
+ if os.getenv('AUTO_PAPER_MULTI_STRATEGY_ENABLED','true').lower()!='true':return [os.getenv('AUTO_PAPER_STRATEGY','reference_class')]
+ configured=[item.strip() for item in os.getenv('AUTO_PAPER_STRATEGY_ARMS','reference_class,fast_model,hybrid_ensemble').split(',') if item.strip()]
+ allowed={'reference_class'}
+ if fast_available:allowed.update({'fast_model','hybrid_ensemble'})
+ arms=[item for item in configured if item in allowed]
+ return arms or ['reference_class']
+
+def _select_strategy(memory,market_id,arms):
+ counts={arm:0 for arm in arms}
+ for decision in memory.decisions():
+  if decision.strategy_id in counts:counts[decision.strategy_id]+=1
+ minimum=min(counts.values())
+ candidates=[arm for arm in arms if counts[arm]==minimum]
+ digest=hashlib.sha256(str(market_id).encode()).hexdigest()
+ return candidates[int(digest[:8],16)%len(candidates)],counts
 
 def _failure_backoff_seconds(base_interval,failure_streak,max_backoff=900):
  return min(max(1,float(max_backoff)),max(1,float(base_interval))*(2**min(10,max(0,int(failure_streak)))))
@@ -218,22 +239,21 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
    skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':reason});log.info('autonomous paper skipped market=%s reason=%s quality=%.3f status=%s',market_id,reason,market_input.quality_score,market_input.market_status);continue
   try:runner.store.save_verified_input(market_input)
   except Exception as exc:skipped+=1;telemetry.error('verified_input_persist');log.warning('autonomous paper skipped market=%s reason=verified_input_persist error=%s',market_id,exc);continue
-  reference=_number(item.get('reference_rate') or item.get('referenceRate'))
-  if reference is None:
-   if fast_model is None:fast_model=FastMarketProbability()
-   model=fast_model.estimate(item,market_input,memory)
-  else:model=None
+  reference=_number(item.get('reference_rate') or item.get('referenceRate'));baseline=_generic_market_baseline(memory,market_input)
+  if reference is not None:
+   baseline['probability']=max(.01,min(.99,reference));baseline['raw_probability']=baseline['probability'];baseline['uncertainty']=max(.12,min(.3,baseline['uncertainty']));baseline['lower_bound']=max(.01,baseline['probability']-baseline['uncertainty']);baseline['upper_bound']=min(.99,baseline['probability']+baseline['uncertainty']);baseline['model_version']='reference_class_v1';baseline['calibration_status']='reference_rate'
+  if fast_model is None:fast_model=FastMarketProbability()
+  model=fast_model.estimate(item,market_input,memory)
   if model is not None:
-   telemetry.inc('vesper_fast_model_estimates_total',labels={'model_version':model['model_version'],'asset':model['asset']})
-   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_probability=model['probability'];market_input.model_version=model['model_version'];market_input.model_provenance={'provider':'vesper_fast_model','version':model['model_version'],'asset':model.get('asset'),'regime':model.get('regime'),'calibration_samples':model.get('calibration_samples',0),'observed_at':market_input.observed_at.isoformat() if market_input.observed_at else None};market_input.model_lower_bound=model['lower_bound'];market_input.model_upper_bound=model['upper_bound'];market_input.model_uncertainty=model['uncertainty'];market_input.model_calibration_samples=model['calibration_samples'];market_input.model_calibration_status=model['calibration_status'];market_input.regime=model['regime'];market_input.signals={'fast_model':model['probability']};telemetry.set('vesper_fast_model_uncertainty',model['uncertainty']);telemetry.inc('vesper_fast_model_regime_total',labels={'regime':model['regime']})
-  elif reference is not None:market_input.reference_rate=max(0,min(1,reference))
-  else:
-   # Keep broad fast-market discovery useful even when no asset-specific
-   # feed/model exists. This is a market-price baseline, not an independent
-   # edge; historical calibration must create the edge before sizing.
-   model=_generic_market_baseline(memory,market_input)
-   market_input.reference_rate=model['probability'];market_input.raw_model_probability=model['raw_probability'];market_input.model_probability=model['probability'];market_input.model_version=model['model_version'];market_input.model_provenance={'provider':'market_baseline','version':model['model_version'],'calibration_samples':model.get('calibration_samples',0),'observed_at':market_input.observed_at.isoformat() if market_input.observed_at else None};market_input.model_lower_bound=model['lower_bound'];market_input.model_upper_bound=model['upper_bound'];market_input.model_uncertainty=model['uncertainty'];market_input.model_calibration_samples=model['calibration_samples'];market_input.model_calibration_status=model['calibration_status'];telemetry.inc('vesper_generic_market_baseline_total');log.info('autonomous paper using market baseline market=%s',market_id)
-  request=DecisionRequest(market=market_input,strategy_id=os.getenv('AUTO_PAPER_STRATEGY','reference_class'),execute=True,evidence_complete=True)
+   telemetry.inc('vesper_fast_model_estimates_total',labels={'model_version':model['model_version'],'asset':model['asset']});telemetry.set('vesper_fast_model_uncertainty',model['uncertainty']);telemetry.inc('vesper_fast_model_regime_total',labels={'regime':model['regime']})
+  arms=_strategy_arms(model is not None);strategy_id,arm_counts=_select_strategy(memory,market_id,arms);forecast=baseline
+  if strategy_id=='fast_model' and model is not None:forecast=model
+  elif strategy_id=='hybrid_ensemble' and model is not None:forecast=hybrid_forecast(baseline,model,memory);telemetry.set('vesper_ensemble_fast_weight',forecast['components'][1]['weight'])
+  _apply_forecast(market_input,forecast);market_input.regime=model['regime'] if strategy_id=='fast_model' and model is not None else 'baseline'
+  telemetry.inc('vesper_strategy_arm_selected_total',labels={'strategy':strategy_id});telemetry.set('vesper_strategy_arm_count_'+strategy_id,arm_counts.get(strategy_id,0))
+  if strategy_id=='reference_class':telemetry.inc('vesper_generic_market_baseline_total');log.info('autonomous paper using market baseline market=%s',market_id)
+  elif strategy_id=='hybrid_ensemble':log.info('autonomous paper using hybrid ensemble market=%s components=baseline+fast_model',market_id)
+  request=DecisionRequest(market=market_input,strategy_id=strategy_id,execute=True,evidence_complete=True)
   try:decision=decide_fn(request,None)
   except Exception as exc:skipped+=1;log.warning('autonomous paper evaluation failed market=%s error=%s',market_id,exc);continue
   evaluated+=1;type_counts[selection_type]=type_counts.get(selection_type,0)+1;recent[market_id]=now

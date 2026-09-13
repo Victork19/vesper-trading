@@ -150,6 +150,14 @@ but still use real paper fills, settlement, PnL, scars and operational diagnosti
 Five-minute markets can increase sample throughput, but they require liquid books and realistic latency/slippage
 assumptions.
 
+Paper mode automatically runs a balanced strategy tournament when
+`AUTO_PAPER_MULTI_STRATEGY_ENABLED=true` (the default). It assigns eligible markets among the market baseline
+(`reference_class`), the independent short-horizon model (`fast_model`), and `hybrid_ensemble`, while allowing only
+one strategy to open a paper position on a market at a time. The hybrid combines the baseline and fast forecasts in
+log-odds space, records both component forecasts and weights, and adapts its fast-model weight only from resolved,
+research-eligible paper outcomes. Exploration remains a separate fixed-size execution experiment and is excluded from
+live-readiness evidence.
+
 Fast-only mode is a hard constraint when `FAST_MARKETS_ONLY=true` (the default). `AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS=1`
 limits autonomous exposure to markets resolving within one hour. Slower markets are excluded before autonomous evaluation,
 and API decisions sourced from Polymarket receive `slow_market_excluded` instead of exposure when they exceed the limit.
