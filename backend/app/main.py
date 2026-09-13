@@ -279,8 +279,12 @@ def risk_state(_=Depends(require_api_key)):return {'portfolio_heat':portfolio.he
 def dashboard(_=Depends(require_api_key)):
  h=memory.hot();return {'mode':h.mode,'risk':risk_state(),'pipeline':autonomy.status(),'observations':ingestion_store.status(),'decisions':len(memory.decisions()),'scars':len(memory.scars()),'principles':len(memory.principles()),'metrics':len(memory.snapshots())}
 @app.get('/markets')
-def list_markets(limit:int=20):
- try:return markets.markets(limit)
+def list_markets(limit:int=20,fast_only:bool=False):
+ try:
+  if fast_only:
+   now=datetime.now(timezone.utc);minimum_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));maximum_hours=max(minimum_hours,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1')))
+   return markets.markets(limit,order='endDate',ascending=True,closed=False,end_date_min=(now+timedelta(hours=minimum_hours)).isoformat().replace('+00:00','Z'),end_date_max=(now+timedelta(hours=maximum_hours)).isoformat().replace('+00:00','Z'))
+  return markets.markets(limit)
  except Exception as e:log.warning('market list failed error=%s',e);raise HTTPException(502,'market_data_unavailable')
 @app.get('/markets/{market_id}')
 def get_market(market_id):
