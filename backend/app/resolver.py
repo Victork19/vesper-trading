@@ -36,6 +36,22 @@ class OutcomeResolver:
     def _clear_retry(self,market_id):
         with self.memory.db.connection() as c:c.execute('DELETE FROM resolution_retries WHERE market_id=%s',(market_id,))
 
+    def _past_resolution_time(self, decisions):
+        now=datetime.now(timezone.utc)
+        for decision in decisions:
+            value=(decision.market_context or {}).get('market_end_time')
+            if not value:
+                continue
+            try:
+                end=datetime.fromisoformat(str(value).replace('Z','+00:00'))
+                if end.tzinfo is None:
+                    end=end.replace(tzinfo=timezone.utc)
+                if end<=now:
+                    return True
+            except (TypeError,ValueError):
+                continue
+        return False
+
     def tick(self):
         if not self.enabled:
             telemetry.set("vesper_resolution_enabled", 0)
@@ -49,7 +65,10 @@ class OutcomeResolver:
         market_ids=sorted(by_market, key=lambda market_id:min(d.created_at for d in by_market[market_id]))
         market_cache = {}
         for market_id in market_ids[:self.batch_size]:
-            if not self._retry_due(market_id):
+            # Once a paper market's expected end has passed, retry backoff
+            # must not hide it indefinitely. Keep checking until Gamma
+            # publishes an authoritative terminal result.
+            if not self._retry_due(market_id) and not self._past_resolution_time(by_market[market_id]):
                 continue
             checked += 1
             try:
