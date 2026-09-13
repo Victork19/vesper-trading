@@ -1,6 +1,7 @@
 import { Component, StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlertTriangle, BarChart3, BookOpen, CheckCircle2, ChevronRight, CircleHelp, Database, Gauge, LayoutDashboard, LogOut, Menu, PauseCircle, PlayCircle, RefreshCw, Search, Settings as SettingsIcon, ShieldCheck, SlidersHorizontal, Sparkles, X, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, BarChart3, BookOpen, CheckCircle2, ChevronRight, CircleHelp, ClipboardList, Database, Gauge, LayoutDashboard, LogOut, Menu, PauseCircle, PlayCircle, RefreshCw, Search, Settings as SettingsIcon, ShieldCheck, SlidersHorizontal, X, Zap } from 'lucide-react';
+const Sparkles = ClipboardList;
 import './styles.css';
 
 const API_URL = String(import.meta.env.VITE_API_URL || '').trim().replace(/\/$/, '');
@@ -80,7 +81,7 @@ function formatTime(value?: string | null) { if (!value) return 'never'; const d
 function percent(value: unknown, digits = 1) { return `${(Number(value || 0) * 100).toFixed(digits)}%`; }
 function number(value: unknown, digits = 2) { return Number(value || 0).toFixed(digits); }
 const navItems: { id: Tab; label: string; icon: typeof LayoutDashboard }[] = [
-  { id: 'overview', label: 'Overview', icon: LayoutDashboard }, { id: 'decisions', label: 'Decisions', icon: Sparkles }, { id: 'orders', label: 'Orders', icon: Zap }, { id: 'metrics', label: 'Performance', icon: BarChart3 }, { id: 'scars', label: 'System memory', icon: BookOpen }, { id: 'operations', label: 'System health', icon: Database }, { id: 'settings', label: 'Settings', icon: SettingsIcon },
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard }, { id: 'decisions', label: 'Decisions', icon: ClipboardList }, { id: 'orders', label: 'Orders', icon: Zap }, { id: 'metrics', label: 'Performance', icon: BarChart3 }, { id: 'scars', label: 'System memory', icon: BookOpen }, { id: 'operations', label: 'System health', icon: Database }, { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 const pageMeta: Record<Tab, { title: string; subtitle: string }> = {
   overview: { title: 'System overview', subtitle: 'See what the automatic worker is doing and what needs attention.' },
