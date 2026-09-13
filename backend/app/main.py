@@ -75,7 +75,10 @@ async def request_telemetry(request:Request,call_next):
    except HTTPException:pass
   if principal:
    security.check_rate(principal.key_id,request.url.path)
-   if request.cookies.get('vesper_session') and request.method in {'POST','PUT','PATCH','DELETE'}:
+   # Session creation authenticates with the API key and replaces any stale
+   # session cookie. It must not be blocked by CSRF validation from that old
+   # cookie, otherwise an expired session makes the user unable to log in.
+   if request.cookies.get('vesper_session') and request.method in {'POST','PUT','PATCH','DELETE'} and not (request.url.path == '/auth/session' and request.method == 'POST'):
     origin=request.headers.get('origin')
     allowed={item.strip().rstrip('/') for item in os.getenv('CORS_ORIGINS','http://localhost:5173').split(',') if item.strip()}
     if not origin or origin.rstrip('/') not in allowed:

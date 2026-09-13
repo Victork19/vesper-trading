@@ -5,6 +5,7 @@ os.environ['VESPER_API_KEY']='client-test-key'
 os.environ['VESPER_ADMIN_KEY']='admin-test-key'
 from fastapi.testclient import TestClient
 from app.main import app
+import app.main as main_module
 
 c=TestClient(app)
 
@@ -17,13 +18,21 @@ def test_scoped_authentication():
  assert c.post('/operator/revoke-key/'+rotated['key_id'],headers={'X-Vesper-Key':'admin-test-key'}).status_code==200
  assert c.get('/decisions',headers={'X-Vesper-Key':rotated['key']}).status_code==401
 
+def test_login_replaces_stale_session_cookie(monkeypatch):
+ monkeypatch.setattr(main_module.settings,'session_secret','test-session-secret')
+ client=TestClient(app)
+ client.cookies.set('vesper_session','expired-session-token')
+ response=client.post('/auth/session',headers={'X-Vesper-Key':'client-test-key'})
+ assert response.status_code==200
+ assert response.json()['authenticated'] is True
+
 def test_operational_surfaces():
  headers={'X-Vesper-Key':'client-test-key'}
  assert c.get('/observability',headers=headers).status_code==200
  assert c.get('/alerts',headers=headers).status_code==200
  assert c.get('/metrics/prometheus',headers=headers).status_code==200
  assert c.post('/eda/information-requests/request/outcome',headers=headers,json={'status':'fulfilled'}).status_code==403
-  assert c.post('/operator/retention/cleanup',headers=headers).status_code==403
+ assert c.post('/operator/retention/cleanup',headers=headers).status_code==403
 
 def test_production_config_rejects_disabled_auth(monkeypatch):
  import app.config as config
