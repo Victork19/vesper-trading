@@ -156,6 +156,12 @@ and API decisions sourced from Polymarket receive `slow_market_excluded` instead
 Existing slow pending decisions remain monitored for terminal resolution but receive no new exposure. Fast-only research
 reports exclude slow-market outcomes.
 
+Ingestion and paper-trading scope are separate. When the short-term window is empty, `INGESTION_FALLBACK_ACTIVE_MARKETS=true`
+(the default) lets the data worker collect active markets for dashboard visibility and historical observations. It does not
+allow the autonomous paper trader to trade those slower markets. `INGEST_OBSERVATION_SAMPLE_SECONDS=300` also intentionally
+limits each market to one sampled observation every five minutes, so a worker can fetch fresh books every minute without
+creating duplicate learning rows.
+
 For short-horizon crypto markets, the autonomous loop uses `fast_market_v3`: a conservative, calibratable multi-horizon
 drift/volatility estimate from public one-minute spot candles. It uses winsorized returns, EWMA short/medium/long windows,
 volatility-shock detection, mean-reversion pressure, horizon projection, uncertainty bounds and regime labels. Calibration

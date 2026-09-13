@@ -20,6 +20,19 @@ def test_ingestion_uses_fast_research_window_by_default(monkeypatch):
  assert params['end_date_min']<params['end_date_max']
 
 
+def test_empty_fast_window_falls_back_to_active_observation_markets(monkeypatch):
+ monkeypatch.setenv('FAST_MARKETS_ONLY','true')
+ monkeypatch.setenv('INGESTION_FALLBACK_ACTIVE_MARKETS','true')
+ class FallbackMarketData(FakeMarketData):
+  def markets(self,limit,**kwargs):
+   self.calls.append((limit,kwargs))
+   return [] if kwargs.get('end_date_min') else [{'id':'active-market'}]
+ runner=object.__new__(IngestionRunner);runner.data=FallbackMarketData()
+ assert runner.research_markets(50)==[{'id':'active-market'}]
+ assert len(runner.data.calls)==2
+ assert 'end_date_min' not in runner.data.calls[1][1]
+
+
 def test_ingestion_can_opt_out_of_fast_market_scope(monkeypatch):
  monkeypatch.setenv('FAST_MARKETS_ONLY','false')
  runner=object.__new__(IngestionRunner);runner.data=FakeMarketData()
