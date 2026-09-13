@@ -30,3 +30,9 @@ def test_ingestion_can_opt_out_of_fast_market_scope(monkeypatch):
 def test_string_order_book_flag_is_classified_as_ineligible():
  store=object.__new__(IngestionStore)
  assert store.eligibility_reason({'enableOrderBook':'false'})=='order_book_disabled'
+
+
+def test_ingestion_accepts_ask_only_books_for_buy_execution():
+ store=object.__new__(IngestionStore);store.require_books=True;store.require_both_books=True
+ market={'question':'Will Bitcoin go up?','outcomePrices':['.6','.4'],'active':True,'closed':False,'outcomes':['Yes','No'],'clobTokenIds':['yes','no'],'_vesper_book':{'best_ask':.6,'observed_at':'2026-08-21T00:00:00Z'},'_vesper_no_book':{'best_ask':.4,'observed_at':'2026-08-21T00:00:00Z'}}
+ assert store.validation_reason(market) is None

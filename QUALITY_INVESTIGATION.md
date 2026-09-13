@@ -35,6 +35,11 @@ list-markets API reference](https://docs.polymarket.com/api-reference/markets/li
 - The later logs showed successful book requests and successful paper
   evaluations. The zero exposed decisions were caused by `DO NOTHING` and
   negative edge, not by dashboard/API transport failure.
+- The observability breakdown then isolated the remaining score loss: 48
+  `invalid_order_book` rows and 4 `incoherent_book_timestamps` rows. The
+  validator had collapsed missing bids, missing asks, and malformed books into
+  one reason, while also requiring a bid even though this system executes buys
+  from ask-side depth.
 
 ## Changes
 
@@ -54,6 +59,8 @@ list-markets API reference](https://docs.polymarket.com/api-reference/markets/li
 7. Made normal ingestion use the same fast-market time window as the research
    loop when `FAST_MARKETS_ONLY=true` (the default), while preserving an
    explicit opt-out.
+8. Corrected executable-book validation to require YES and NO asks, not bids.
+   Crossed books, missing asks, and incoherent timestamps remain rejected.
 
 The score still penalizes an eligible market with a missing/invalid book. That
 is intentional: those markets are executable candidates, so their data must

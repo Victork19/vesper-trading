@@ -124,7 +124,10 @@ class PolymarketData:
   reasons=[];active=bool(market.get('active',True)) and not bool(market.get('closed',False));liquidity=self._number(market.get('liquidity'));raw_volume=market.get('volume24hr') if market.get('volume24hr') not in (None,'') else market.get('volume24h');volume_known=raw_volume not in (None,'');volume=self._number(raw_volume);liquid=liquidity>=1000 and (not volume_known or volume>=5000);fresh=True
   if not active:reasons.append('market_not_active')
   if liquidity<1000 or (volume_known and volume<5000):reasons.append('insufficient_liquidity_or_volume')
-  executable=bool(book and book.best_ask is not None and book.best_bid is not None and book.best_bid<book.best_ask)
+  # Paper/live buys consume ask-side depth. A market may legitimately have
+  # no bid yet and still be executable for a buy; crossed books are rejected
+  # by book() and the ingestion validator.
+  executable=bool(book and book.best_ask is not None)
   if not executable:reasons.append('executable_book_unavailable')
   if book and book.observed_at:
    try:fresh=(datetime.now(timezone.utc)-datetime.fromisoformat(str(book.observed_at).replace('Z','+00:00'))).total_seconds()<=max(1,float(os.getenv('MAX_BOOK_AGE_SECONDS','15')))

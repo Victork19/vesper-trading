@@ -30,6 +30,14 @@ def test_binary_token_pair_requires_explicit_yes_and_no_labels():
  assert binary_token_pair({'outcomes':['No','Yes'],'clobTokenIds':['no-token','yes-token']})==('yes-token','no-token')
  assert binary_token_pair({'outcomes':['A','B'],'clobTokenIds':['a-token','b-token']})==(None,None)
 
+def test_buyable_ask_only_book_is_executable():
+ item={'id':'ask-only','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}
+ observed=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+ yes=OrderBook(token_id='yes-token',observed_at=observed,asks=[BookLevel(price=.6,size=.02)],best_ask=.6)
+ no=OrderBook(token_id='no-token',observed_at=observed,asks=[BookLevel(price=.4,size=.01)],best_ask=.4)
+ market=PolymarketData().to_input(item,yes_book=yes,no_book=no)
+ assert market.quality_score==1 and market.yes_ask==.6 and market.no_ask==.4
+
 def test_stale_candle_series_is_rejected():
  assert not _fresh_candles([[0,0,0,0,100,0]])
 

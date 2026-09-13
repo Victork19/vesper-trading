@@ -32,7 +32,7 @@ class IngestionStore:
   with self.lock:
    market_id=str(market.get('id') or market.get('conditionId') or '')
    if not market_id:return False
-   payload=json.dumps(market,sort_keys=True,separators=(',',':'));digest=hashlib.sha256(payload.encode()).hexdigest();observed=datetime.now(timezone.utc).isoformat();eligibility_reason=self.eligibility_reason(market);reason=self.validation_reason(market);valid=reason is None and eligibility_reason is None;validation_reason=reason or eligibility_reason;book=market.get('_vesper_book') or {};no_book=market.get('_vesper_no_book') or {};book_valid=bool(book.get('best_bid') is not None and book.get('best_ask') is not None and book.get('best_bid')<book.get('best_ask') and (not self.require_both_books or (no_book.get('best_bid') is not None and no_book.get('best_ask') is not None and no_book.get('best_bid')<no_book.get('best_ask'))) and self.book_skew_seconds(market)<=max(1,float(os.getenv('MAX_CONTRACT_QUOTE_SKEW_SECONDS','10'))));sequence=book.get('sequence');eligible=eligibility_reason is None
+   payload=json.dumps(market,sort_keys=True,separators=(',',':'));digest=hashlib.sha256(payload.encode()).hexdigest();observed=datetime.now(timezone.utc).isoformat();eligibility_reason=self.eligibility_reason(market);reason=self.validation_reason(market);valid=reason is None and eligibility_reason is None;validation_reason=reason or eligibility_reason;book=market.get('_vesper_book') or {};no_book=market.get('_vesper_no_book') or {};book_valid=bool(book.get('best_ask') is not None and (not self.require_both_books or no_book.get('best_ask') is not None) and self.book_skew_seconds(market)<=max(1,float(os.getenv('MAX_CONTRACT_QUOTE_SKEW_SECONDS','10'))));sequence=book.get('sequence');eligible=eligibility_reason is None
    with self.db.connection() as c:
     inserted=c.execute('INSERT INTO market_snapshots(market_id,observed_at,payload,payload_hash) VALUES(%s,%s,%s,%s) ON CONFLICT(payload_hash) DO NOTHING',(market_id,observed,self.db.json(market),digest)).rowcount==1
     sample_seconds=max(0,int(os.getenv('INGEST_OBSERVATION_SAMPLE_SECONDS','300')))
@@ -57,9 +57,11 @@ class IngestionStore:
    if market.get('closed') and market.get('active'):return 'closed_and_active'
    book=market.get('_vesper_book') or {};no_book=market.get('_vesper_no_book') or {}
    if self.require_books and not book:return 'missing_order_book'
-   if book and (book.get('best_bid') is None or book.get('best_ask') is None or book.get('best_bid')>=book.get('best_ask')):return 'invalid_order_book'
+   if book and book.get('best_ask') is None:return 'missing_order_book_ask'
+   if book and book.get('best_bid') is not None and book.get('best_bid')>=book.get('best_ask'):return 'invalid_order_book'
    if self.require_both_books and not no_book:return 'missing_no_order_book'
-   if no_book and (no_book.get('best_bid') is None or no_book.get('best_ask') is None or no_book.get('best_bid')>=no_book.get('best_ask')):return 'invalid_no_order_book'
+   if no_book and no_book.get('best_ask') is None:return 'missing_no_order_book_ask'
+   if no_book and no_book.get('best_bid') is not None and no_book.get('best_bid')>=no_book.get('best_ask'):return 'invalid_no_order_book'
    if self.book_skew_seconds(market)>max(1,float(os.getenv('MAX_CONTRACT_QUOTE_SKEW_SECONDS','10'))):return 'incoherent_book_timestamps'
    return None
   except (TypeError,ValueError,json.JSONDecodeError):return 'malformed_market_payload'
