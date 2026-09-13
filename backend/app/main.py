@@ -695,3 +695,4 @@ def clear_learning(_=Depends(require_admin)):
 def seed_market(_=Depends(require_admin)):
  if settings.deployment_stage!='paper' or os.getenv('VESPER_ENV','development').lower() in {'production','prod'}:raise safe_http(404,'not_found')
  return {'market_id':'demo-market','message':'Use price 0.45, liquidity 25000, volume 100000, reference_rate 0.60.'}
+

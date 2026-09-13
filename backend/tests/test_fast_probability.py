@@ -1,10 +1,9 @@
 from app.fast_probability import estimate_from_closes
-from app.market_data import PolymarketData
+from app.market_data import PolymarketData, binary_token_pair
 from app.fast_probability import _fresh_candles
 from app.settlement import parse_terminal_resolution
 from app.adapters import paper_fill_profile, paper_execution_profile
 from app.models import BookLevel, OrderBook, MarketInput
-from app.market_data import PolymarketData
 from app.market_policy import fast_market_allowed
 from app.models import DecisionRecord, Mode
 from app.fast_probability import FastMarketProbability
@@ -26,6 +25,10 @@ def test_market_input_preserves_expiry_and_paper_costs(monkeypatch):
  item={'id':'fast-1','question':'Bitcoin Up or Down?','outcomePrices':'["0.5","0.5"]','endDate':'2099-01-01T00:00:00Z','active':True,'closed':False,'liquidity':10000,'volume24hr':10000}
  market=PolymarketData().to_input(item)
  assert market.market_end_time and market.resolution_hours>0 and market.fee_rate==.02 and market.slippage_bps==10
+
+def test_binary_token_pair_requires_explicit_yes_and_no_labels():
+ assert binary_token_pair({'outcomes':['No','Yes'],'clobTokenIds':['no-token','yes-token']})==('yes-token','no-token')
+ assert binary_token_pair({'outcomes':['A','B'],'clobTokenIds':['a-token','b-token']})==(None,None)
 
 def test_stale_candle_series_is_rejected():
  assert not _fresh_candles([[0,0,0,0,100,0]])

@@ -10,6 +10,24 @@ INPUT_SCHEMA_VERSION='market_input_v2'
 
 class MarketDataError(RuntimeError): pass
 
+def binary_token_pair(item):
+ tokens=item.get('clobTokenIds') or item.get('clobTokenIDs') or []
+ outcomes=item.get('outcomes',[])
+ if isinstance(tokens,str):
+  try:tokens=json.loads(tokens)
+  except json.JSONDecodeError:tokens=[]
+ if isinstance(outcomes,str):
+  try:outcomes=json.loads(outcomes)
+  except json.JSONDecodeError:outcomes=[]
+ if not isinstance(tokens,list) or not isinstance(outcomes,list) or len(outcomes)!=len(tokens):return None,None
+ yes=no=None
+ for token,label in zip(tokens,outcomes):
+  text=str(label).strip().lower()
+  if text in ('yes','true'):yes=str(token)
+  elif text in ('no','false'):no=str(token)
+ if yes is None or no is None or yes==no:return None,None
+ return yes,no
+
 class PolymarketData:
  def __init__(self):
   self.client=httpx.Client(timeout=httpx.Timeout(10.0,connect=3.0),headers={'User-Agent':'vesper-trading/7.0'})
@@ -81,27 +99,12 @@ class PolymarketData:
   try:return datetime.fromisoformat(str(value).replace('Z','+00:00'))
   except (TypeError,ValueError):return None
  def token_pair(self,item):
-  tokens=item.get('clobTokenIds') or item.get('clobTokenIDs') or []
-  outcomes=item.get('outcomes',[])
-  if isinstance(tokens,str):
-   try:tokens=json.loads(tokens)
-   except json.JSONDecodeError:tokens=[]
-  if isinstance(outcomes,str):
-   try:outcomes=json.loads(outcomes)
-   except json.JSONDecodeError:outcomes=[]
-  if not isinstance(tokens,list):return None,None
-  yes=no=None
-  if isinstance(outcomes,list) and len(outcomes)==len(tokens):
-   for token,label in zip(tokens,outcomes):
-    text=str(label).strip().lower()
-    if text in ('yes','true'):yes=str(token)
-    elif text in ('no','false'):no=str(token)
-  # Gamma occasionally returns non-binary or incomplete markets in the
-  # active-market feed. Those markets are still useful for ingestion/quality
-  # reporting, but they cannot provide executable YES/NO paper inputs.
+  yes,no=binary_token_pair(item)
   if yes is None or no is None or yes==no:
+   # Gamma occasionally returns non-binary or incomplete markets in the
+   # active-market feed. Those markets are still useful for discovery, but
+   # they cannot provide executable YES/NO paper inputs.
    telemetry.inc('vesper_markets_missing_outcome_labels')
-   return None,None
   return yes,no
  def to_input(self,item,book=None,yes_book=None,no_book=None):
   item=self.validate_market(item);yes_book=yes_book or book;yes_token,no_token=self.token_pair(item);prices=item.get('outcomePrices',[.5])

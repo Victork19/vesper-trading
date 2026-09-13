@@ -2,14 +2,18 @@ import hashlib,json,os,threading
 from contextlib import contextmanager
 from datetime import datetime,timezone
 from .db import PostgresDatabase
-from .market_data import PolymarketData
+from .market_data import PolymarketData,binary_token_pair
 from .observability import telemetry
 from .resolver import OutcomeResolver
 from .eda import insert_canonical_event_json, make_canonical_event
 from .models import EventQuality
 
 class IngestionStore:
- def __init__(self,database=None,path=None):self.db=database or PostgresDatabase();self.require_books=os.getenv('INGEST_REQUIRE_BOOKS','true').lower()=='true';self.require_both_books=os.getenv('INGEST_REQUIRE_BOTH_BOOKS','true').lower()=='true';self.lock=threading.RLock()
+ def __init__(self,database=None,path=None):self.db=database or PostgresDatabase();self.require_books=os.getenv('INGEST_REQUIRE_BOOKS','true').lower()=='true';self.require_both_books=os.getenv('INGEST_REQUIRE_BOTH_BOOKS','true').lower()=='true';self.quality_window_seconds=max(300,int(os.getenv('DATA_QUALITY_WINDOW_SECONDS','1800')));self.lock=threading.RLock()
+ def eligibility_reason(self,market):
+  if market.get('enableOrderBook') is False:return 'order_book_disabled'
+  yes,no=binary_token_pair(market)
+  return None if yes and no else 'unsupported_outcome_labels'
  def book_skew_seconds(self,market):
   books=[market.get('_vesper_book') or {},market.get('_vesper_no_book') or {}]
   stamps=[]
@@ -28,13 +32,13 @@ class IngestionStore:
   with self.lock:
    market_id=str(market.get('id') or market.get('conditionId') or '')
    if not market_id:return False
-   payload=json.dumps(market,sort_keys=True,separators=(',',':'));digest=hashlib.sha256(payload.encode()).hexdigest();observed=datetime.now(timezone.utc).isoformat();reason=self.validation_reason(market);valid=reason is None;book=market.get('_vesper_book') or {};no_book=market.get('_vesper_no_book') or {};book_valid=bool(book.get('best_bid') is not None and book.get('best_ask') is not None and book.get('best_bid')<book.get('best_ask') and (not self.require_both_books or (no_book.get('best_bid') is not None and no_book.get('best_ask') is not None and no_book.get('best_bid')<no_book.get('best_ask'))) and self.book_skew_seconds(market)<=max(1,float(os.getenv('MAX_CONTRACT_QUOTE_SKEW_SECONDS','10'))));sequence=book.get('sequence')
+   payload=json.dumps(market,sort_keys=True,separators=(',',':'));digest=hashlib.sha256(payload.encode()).hexdigest();observed=datetime.now(timezone.utc).isoformat();eligibility_reason=self.eligibility_reason(market);reason=self.validation_reason(market);valid=reason is None and eligibility_reason is None;validation_reason=reason or eligibility_reason;book=market.get('_vesper_book') or {};no_book=market.get('_vesper_no_book') or {};book_valid=bool(book.get('best_bid') is not None and book.get('best_ask') is not None and book.get('best_bid')<book.get('best_ask') and (not self.require_both_books or (no_book.get('best_bid') is not None and no_book.get('best_ask') is not None and no_book.get('best_bid')<no_book.get('best_ask'))) and self.book_skew_seconds(market)<=max(1,float(os.getenv('MAX_CONTRACT_QUOTE_SKEW_SECONDS','10'))));sequence=book.get('sequence');eligible=eligibility_reason is None
    with self.db.connection() as c:
     inserted=c.execute('INSERT INTO market_snapshots(market_id,observed_at,payload,payload_hash) VALUES(%s,%s,%s,%s) ON CONFLICT(payload_hash) DO NOTHING',(market_id,observed,self.db.json(market),digest)).rowcount==1
     sample_seconds=max(0,int(os.getenv('INGEST_OBSERVATION_SAMPLE_SECONDS','300')))
     recent=c.execute('SELECT 1 FROM market_observations WHERE market_id=%s AND observed_at>NOW()-(%s * interval \'1 second\') LIMIT 1',(market_id,sample_seconds)).fetchone() if sample_seconds else None
     if not recent:
-     c.execute('INSERT INTO market_observations(market_id,observed_at,payload_hash,valid,validation_reason,book_valid,book_sequence) VALUES(%s,%s,%s,%s,%s,%s,%s)',(market_id,observed,digest,valid,reason,book_valid,sequence))
+     c.execute('INSERT INTO market_observations(market_id,observed_at,payload_hash,valid,validation_reason,book_valid,book_sequence,eligible) VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',(market_id,observed,digest,valid,validation_reason,book_valid,sequence,eligible))
     missing=[]
     if not market.get('question'): missing.append('question')
     if not book: missing.append('yes_order_book')
@@ -89,9 +93,10 @@ class IngestionStore:
  def distinct_markets(self):
   with self.db.connection() as c:return c.execute('SELECT COUNT(DISTINCT market_id) AS count FROM market_observations').fetchone()['count']
  def quality(self):
-  with self.db.connection() as c:row=c.execute("SELECT COUNT(*) AS total,COUNT(*) FILTER (WHERE NOT valid) AS invalid,COUNT(*) FILTER (WHERE NOT book_valid) AS invalid_books,MAX(observed_at) AS last FROM market_observations").fetchone();reason_rows=c.execute("SELECT COALESCE(validation_reason,'unknown') AS reason,COUNT(*) AS count FROM market_observations WHERE NOT valid GROUP BY validation_reason ORDER BY count DESC").fetchall()
-  total=row['total'];invalid=row['invalid'];invalid_books=row['invalid_books'];last=row['last'];last_value=last.isoformat() if hasattr(last,'isoformat') else last;stale=not last or (datetime.now(timezone.utc)-last).total_seconds()>300
-  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'missing_required_fields':invalid,'invalid_observations':invalid,'invalid_books':invalid_books,'invalid_reasons':{row['reason']:row['count'] for row in reason_rows},'book_coverage':0 if not total else max(0,1-(invalid_books/total)),'last_observed_at':last_value,'stale':stale}
+  window=self.quality_window_seconds
+  with self.db.connection() as c:row=c.execute("SELECT COUNT(*) FILTER (WHERE eligible) AS total,COUNT(*) FILTER (WHERE eligible AND NOT valid) AS invalid,COUNT(*) FILTER (WHERE eligible AND NOT book_valid) AS invalid_books,COUNT(*) FILTER (WHERE NOT eligible) AS ineligible,MAX(observed_at) FILTER (WHERE eligible) AS last FROM market_observations WHERE observed_at>=NOW()-(%s * interval '1 second')",(window,)).fetchone();reason_rows=c.execute("SELECT COALESCE(validation_reason,'unknown') AS reason,COUNT(*) AS count FROM market_observations WHERE eligible AND NOT valid AND observed_at>=NOW()-(%s * interval '1 second') GROUP BY validation_reason ORDER BY count DESC",(window,)).fetchall()
+  total=int(row['total'] or 0);invalid=int(row['invalid'] or 0);invalid_books=int(row['invalid_books'] or 0);ineligible=int(row['ineligible'] or 0);last=row['last'];last_value=last.isoformat() if hasattr(last,'isoformat') else last;stale=not last or (datetime.now(timezone.utc)-last).total_seconds()>300
+  return {'score':0 if not total else max(0,1-(invalid/total)),'snapshots':total,'observed_snapshots':total+ineligible,'ineligible_observations':ineligible,'quality_window_seconds':window,'missing_required_fields':invalid,'invalid_observations':invalid,'invalid_books':invalid_books,'invalid_reasons':{row['reason']:row['count'] for row in reason_rows},'book_coverage':0 if not total else max(0,1-(invalid_books/total)),'last_observed_at':last_value,'stale':stale}
  def status(self):
   with self.db.connection() as c:last=c.execute('SELECT MAX(observed_at) AS last FROM market_observations').fetchone()['last']
   return {'snapshots':self.count(),'distinct_markets':self.distinct_markets(),'last_observed_at':last.isoformat() if hasattr(last,'isoformat') else last,'quality':self.quality(),'worker':self.worker_health()}
@@ -117,6 +122,9 @@ class IngestionRunner:
    items=self.data.markets(limit);saved=0;books=0;telemetry.inc('vesper_ingestion_ticks_total')
    for item in items:
     enriched=dict(item);yes_token,no_token=self.data.token_pair(item)
+    if item.get('enableOrderBook') is False:
+     saved+=int(self.store.save(enriched))
+     continue
     if yes_token:
      try:book=self.data.book(yes_token);enriched['_vesper_book']=book.model_dump();enriched['_vesper_yes_book']=book.model_dump();books+=1
      except Exception as exc:enriched['_vesper_book_error']=str(exc);telemetry.error('book_fetch')
