@@ -223,6 +223,14 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
  candidate_count=len(ranked);ranked.sort(key=lambda pair:pair[0],reverse=not prefer_fast)
  telemetry.set('vesper_autonomous_paper_candidate_count',candidate_count);telemetry.set('vesper_autonomous_paper_horizon_skipped',horizon_skipped);telemetry.set('vesper_autonomous_paper_min_resolution_hours',min_hours);telemetry.set('vesper_autonomous_paper_max_resolution_hours',max_hours);telemetry.set('vesper_autonomous_paper_fast_only',int(fast_only));telemetry.set('vesper_autonomous_paper_fast_max_hours',fast_max)
  ranked.sort(key=lambda pair:(pair[0],pair[1] if prefer_fast else -pair[1]))
+ # Do not let a large Gamma result set starve the next ingestion/resolution
+ # cycle. Each candidate can require two network calls, so the scan itself
+ # must remain bounded independently of the number of returned markets.
+ scan_limit=max(limit,min(100,int(os.getenv('AUTO_PAPER_CANDIDATE_SCAN_LIMIT','20'))))
+ ranked=ranked[:scan_limit]
+ telemetry.set('vesper_autonomous_paper_scan_limit',scan_limit)
+ if candidate_count>scan_limit:
+  log.info('autonomous paper candidate scan bounded candidates=%s scan_limit=%s',candidate_count,scan_limit)
  for priority,hours,item in ranked:
   if evaluated>=limit:break
   market_id=str(item.get('id') or item.get('conditionId') or '');market_type=str(item.get('category') or 'unknown')

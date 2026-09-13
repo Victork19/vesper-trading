@@ -1,4 +1,4 @@
-import os
+import logging,os
 from datetime import datetime,timezone
 
 from .engines import ScarEngine
@@ -7,6 +7,8 @@ from .memory import TradingMemory
 from .metrics import MetricsEngine
 from .observability import telemetry
 from .settlement import contract_pnl, parse_terminal_resolution, settle_decision
+
+log=logging.getLogger('vesper.resolver')
 
 
 class OutcomeResolver:
@@ -83,4 +85,5 @@ class OutcomeResolver:
         telemetry.set("vesper_pending_decisions", len(pending))
         telemetry.set("vesper_last_resolved_count", settled)
         telemetry.set("vesper_last_resolution_errors", errors)
+        log.info('resolution tick checked=%s settled=%s unresolved=%s errors=%s pending=%s',checked,settled,unresolved,errors,len(pending))
         return {"checked": checked, "checked_markets": checked, "settled": settled, "unresolved": unresolved, "errors": errors, "pending": len(pending), "pending_markets": len(market_ids)}
