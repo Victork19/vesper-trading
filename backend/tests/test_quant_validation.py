@@ -52,7 +52,9 @@ def test_collateral_heat_is_price_sensitive():
 
 def test_kelly_returns_contracts_not_a_bankroll_fraction():
     contracts = kelly_contracts(.60, .50, bankroll=100.0, fraction=.5)
-    assert contracts == pytest.approx(10.0)
+    # Half-Kelly allocates $10; at a $0.50 collateral cost that is 20
+    # contracts, rather than returning the bankroll allocation as a count.
+    assert contracts == pytest.approx(20.0)
     assert contracts > 1.0
 
 

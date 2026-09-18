@@ -138,10 +138,13 @@ class IngestionRunner:
   telemetry.inc('vesper_ingestion_fast_window_fallback_total')
   return self.data.markets(limit,order='endDate',ascending=True,closed=False)
  def tick(self,limit=50):
+  # Resolve existing paper positions before the potentially slow order-book
+  # scan. Settlement must not wait for every ingestion request to finish.
+  resolution=self.resolver.tick();self.store.record_resolution(resolution)
   with self.store.pipeline_lease() as acquired:
    if not acquired:
     telemetry.inc('vesper_ingestion_ticks_skipped_total',labels={'reason':'pipeline_lease_busy'})
-    return {'markets':0,'books':0,'new_snapshots':0,'observations':self.store.count(),'resolution':{'skipped':True,'reason':'pipeline_lease_busy'}}
+    return {'markets':0,'books':0,'new_snapshots':0,'observations':self.store.count(),'resolution':resolution,'ingestion_skipped':'pipeline_lease_busy'}
    items=self.research_markets(limit);saved=0;books=0;telemetry.inc('vesper_ingestion_ticks_total');telemetry.set('vesper_ingestion_research_markets',int(os.getenv('FAST_MARKETS_ONLY','true').lower()=='true'))
    self.store.record_progress()
    for item in items:
@@ -161,4 +164,4 @@ class IngestionRunner:
   # Release the pipeline lease before resolution. Resolution takes a
   # decision lock and then a portfolio lock; keeping the lease connection
   # open here would exhaust a pool configured at the supported minimum size.
-  resolution=self.resolver.tick();self.store.record_resolution(resolution);return {'markets':len(items),'books':books,'new_snapshots':saved,'observations':self.store.count(),'resolution':resolution}
+  return {'markets':len(items),'books':books,'new_snapshots':saved,'observations':self.store.count(),'resolution':resolution}

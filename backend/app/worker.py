@@ -224,22 +224,40 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
  telemetry.set('vesper_autonomous_paper_candidate_count',candidate_count);telemetry.set('vesper_autonomous_paper_horizon_skipped',horizon_skipped);telemetry.set('vesper_autonomous_paper_min_resolution_hours',min_hours);telemetry.set('vesper_autonomous_paper_max_resolution_hours',max_hours);telemetry.set('vesper_autonomous_paper_fast_only',int(fast_only));telemetry.set('vesper_autonomous_paper_fast_max_hours',fast_max)
  ranked.sort(key=lambda pair:(pair[0],pair[1] if prefer_fast else -pair[1]))
  # Do not let a large Gamma result set starve the next ingestion/resolution
- # cycle. Each candidate can require two network calls, so the scan itself
- # must remain bounded independently of the number of returned markets.
+ # cycle. Local eligibility checks happen before the bounded network scan, so
+ # unsupported, pending, and cooling-down markets cannot starve valid ones.
  scan_limit=max(limit,min(100,int(os.getenv('AUTO_PAPER_CANDIDATE_SCAN_LIMIT','20'))))
- ranked=ranked[:scan_limit]
  telemetry.set('vesper_autonomous_paper_scan_limit',scan_limit)
  if candidate_count>scan_limit:
-  log.info('autonomous paper candidate scan bounded candidates=%s scan_limit=%s',candidate_count,scan_limit)
+  log.info('autonomous paper candidate scan bounded candidates=%s eligible_scan_limit=%s',candidate_count,scan_limit)
+ eligible_ranked=[]
+ unsupported_count=0
  for priority,hours,item in ranked:
+  market_id=str(item.get('id') or item.get('conditionId') or '')
+  if not market_id:
+   skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':'missing_market_id'});log.info('autonomous paper skipped market=unknown reason=missing_market_id');continue
+  if market_id in pending_markets:
+   skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':'pending_market'});log.info('autonomous paper skipped market=%s reason=pending_market',market_id);continue
+  if market_id in recent and (now-recent[market_id]).total_seconds()<cooldown:
+   skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':'cooldown'});log.info('autonomous paper skipped market=%s reason=cooldown',market_id);continue
+  yes_token,no_token=runner.data.token_pair(item)
+  if not yes_token or not no_token:
+   skipped+=1
+   unsupported_count+=1
+   continue
+  eligible_ranked.append((priority,hours,item,yes_token,no_token))
+  if len(eligible_ranked)>=scan_limit:
+   break
+ if unsupported_count:
+  telemetry.inc('vesper_dual_book_unavailable_total',value=unsupported_count,labels={'reason':'missing_token_pair'})
+  log.info('autonomous paper unsupported candidates skipped=%s eligible_scan=%s',unsupported_count,len(eligible_ranked))
+ for priority,hours,item,yes_token,no_token in eligible_ranked:
   if evaluated>=limit:break
   market_id=str(item.get('id') or item.get('conditionId') or '');market_type=str(item.get('category') or 'unknown')
   selection_type=f'{market_type}:{_duration_bucket(hours)}'
   if not market_id or market_id in pending_markets or (market_id in recent and (now-recent[market_id]).total_seconds()<cooldown) or type_counts.get(selection_type,0)>=type_cap:
    reason='missing_market_id' if not market_id else 'pending_market' if market_id in pending_markets else 'cooldown' if market_id in recent and (now-recent[market_id]).total_seconds()<cooldown else 'type_cap'
    skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':reason});log.info('autonomous paper skipped market=%s reason=%s',market_id or 'unknown',reason);continue
-  yes_token,no_token=runner.data.token_pair(item)
-  if not yes_token or not no_token:skipped+=1;telemetry.inc('vesper_dual_book_unavailable_total',labels={'reason':'missing_token_pair'});log.info('autonomous paper skipped market=%s reason=missing_token_pair',market_id);continue
   try:market_input=runner.data.to_input(item,yes_book=runner.data.book(yes_token),no_book=runner.data.book(no_token))
   except Exception as exc:skipped+=1;telemetry.inc('vesper_autonomous_paper_skips_total',labels={'reason':'market_input_error'});log.warning('autonomous paper skipped market=%s reason=market_input_error error=%s',market_id,exc);continue
   if market_input.quality_score<.95 or market_input.market_status!='active':

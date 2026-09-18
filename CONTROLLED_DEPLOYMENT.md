@@ -81,6 +81,9 @@ python backend/tools/release_gate.py
 It never enables trading and exits non-zero for a controlled, canary, or
 production stage when evidence is missing.
 
+Any failed release gate is a no-go. Do not promote or enable live trading until
+the failed check has been independently remediated and rerun.
+
 ## Emergency procedure
 
 Use the operator kill switch immediately. It must stop new submissions, cancel

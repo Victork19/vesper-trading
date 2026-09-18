@@ -96,7 +96,7 @@ class OutcomeResolver:
                 self._clear_retry(market_id)
             except Exception as exc:
                 errors += 1
-                log.warning('resolution failed market=%s error=%s',market_id,exc)
+                log.exception('resolution failed market=%s error=%s',market_id,exc)
                 self._record_retry(market_id,exc)
                 telemetry.error("outcome_resolution")
                 continue

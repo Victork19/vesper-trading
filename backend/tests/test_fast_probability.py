@@ -130,12 +130,37 @@ def test_fast_calibration_excludes_temporally_invalid_decisions():
 
 def test_market_input_keeps_independent_yes_and_no_books():
  item={'id':'dual-book','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}
- yes=OrderBook(token_id='yes-token',observed_at='2026-08-21T00:00:00Z',bids=[BookLevel(price=.5,size=.02)],asks=[BookLevel(price=.6,size=.02)],best_bid=.5,best_ask=.6)
- no=OrderBook(token_id='no-token',observed_at='2026-08-21T00:00:00Z',bids=[BookLevel(price=.3,size=.01)],asks=[BookLevel(price=.4,size=.01)],best_bid=.3,best_ask=.4)
+ observed=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
+ yes=OrderBook(token_id='yes-token',observed_at=observed,bids=[BookLevel(price=.5,size=.02)],asks=[BookLevel(price=.6,size=.02)],best_bid=.5,best_ask=.6)
+ no=OrderBook(token_id='no-token',observed_at=observed,bids=[BookLevel(price=.3,size=.01)],asks=[BookLevel(price=.4,size=.01)],best_bid=.3,best_ask=.4)
  market=PolymarketData().to_input(item,yes_book=yes,no_book=no)
  assert market.yes_token_id=='yes-token' and market.no_token_id=='no-token'
  assert market.yes_ask==.6 and market.no_ask==.4 and market.no_book_asks[0].size==.01
  assert abs(paper_fill_profile(market,.02,'NO')[0]-.425)<1e-9
+
+def test_autonomous_scan_does_not_starve_binary_markets(monkeypatch):
+ from types import SimpleNamespace
+ from app.models import HotState
+ from app.worker import autonomous_paper_cycle
+ now=datetime.now(timezone.utc)
+ monkeypatch.setenv('AUTO_PAPER_DECISIONS_PER_TICK','1')
+ monkeypatch.setenv('AUTO_PAPER_CANDIDATE_SCAN_LIMIT','1')
+ class Memory:
+  def hot(self): return HotState(mode=Mode.PAPER)
+  def decisions(self): return []
+ class Data:
+  def markets(self,*args,**kwargs):
+   return [{'id':str(index),'question':'Unmodeled market','endDate':(now+timedelta(minutes=10)).isoformat(),'active':True,'closed':False,'category':'test','binary':index==20} for index in range(21)]
+  def token_pair(self,item): return ('yes','no') if item['binary'] else (None,None)
+  def book(self,token): return None
+  def to_input(self,item,**kwargs): return MarketInput(market_id=item['id'],question=item['question'],market_type='test',price=.4,reference_rate=.5,resolution_hours=.16,quality_score=1,market_status='active',source='polymarket-clob')
+ class Store:
+  def save_verified_input(self,market_input): return market_input.snapshot_hash
+ class Runner: data=Data();store=Store()
+ class FastModel:
+  def estimate(self,*args): return None
+ result=autonomous_paper_cycle(Runner(),Memory(),lambda request,auth: SimpleNamespace(size=.01,action='BUY',edge=.1,strategy_id='reference_class'),FastModel())
+ assert result['evaluated']==1 and result['traded']==1 and result['skipped']==20
 
 def test_market_input_measures_contract_quote_skew():
  item={'id':'skewed-books','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}
