@@ -162,6 +162,13 @@ def test_autonomous_scan_does_not_starve_binary_markets(monkeypatch):
  result=autonomous_paper_cycle(Runner(),Memory(),lambda request,auth: SimpleNamespace(size=.01,action='BUY',edge=.1,strategy_id='reference_class'),FastModel())
  assert result['evaluated']==1 and result['traded']==1 and result['skipped']==20
 
+def test_decision_record_accepts_settlement_attribution():
+ decision=DecisionRecord(id='attribution',mode=Mode.PAPER,market_id='m',strategy_id='s',action='BUY',side='YES',size=.01,price=.4,fair_probability=.7,confidence=.8,risk_score=5,edge=.2,rationale='test')
+ decision.attribution={'metrics':{'selected_expected_utility':.1}}
+ decision.evaluation_metrics={'execution_error':0}
+ decision.counterfactuals={'status':'estimate_not_causal'}
+ assert decision.attribution['metrics']['selected_expected_utility']==.1
+
 def test_market_input_measures_contract_quote_skew():
  item={'id':'skewed-books','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}
  yes=OrderBook(token_id='yes-token',observed_at='2026-08-21T00:00:00Z',asks=[BookLevel(price=.6,size=.02)],best_ask=.6)
