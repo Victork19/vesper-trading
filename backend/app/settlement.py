@@ -123,15 +123,17 @@ def settle_decision(
         # Settlement is also an append-only execution-ledger event. The
         # idempotency key makes retries harmless while preserving the
         # financial event history independently of mutable decision rows.
-        entry_cost=float(fill_totals['notional']) if fill_totals is not None else float(max(0, decision.executed_notional or effective_exposure*(decision.executed_average_price or decision.paper_execution_price or decision.executable_price or decision.price)))
-        gross_proceeds=float((fill_totals['quantity'] if fill_totals is not None else effective_exposure) if (resolved_yes == (decision.side == 'YES')) else 0)
+        settlement_quantity=float(fill_totals['quantity']) if fill_totals is not None else float(decision.executed_size if decision.execution_reconciled else decision.size*decision.paper_fill_fraction)
+        entry_cost=float(fill_totals['notional']) if fill_totals is not None else float(max(0, decision.executed_notional if decision.execution_reconciled else settlement_quantity*(decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price)))
+        settlement_fee=float(fill_totals['fees']) if fill_totals is not None else float(max(0, decision.executed_fees if decision.execution_reconciled else 0))
+        gross_proceeds=float(settlement_quantity if (resolved_yes == (decision.side == 'YES')) else 0)
         portfolio_connection.execute("""INSERT INTO execution_ledger
                 (event_id,idempotency_key,decision_id,event_type,quantity,notional,fee,entry_cost,gross_proceeds,realized_pnl,cash_delta,payload,observed_at)
                 VALUES(%s,%s,%s,'settlement',%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                 ON CONFLICT(idempotency_key) DO NOTHING""",
                 ('ledger_settle_'+decision.id, 'settlement:'+decision.id, decision.id,
-                 float(decision.executed_size if decision.execution_reconciled else effective_exposure), entry_cost,
-                 float(getattr(decision,'executed_fees',0) or 0), entry_cost, gross_proceeds, float(pnl), float(pnl),
+                 settlement_quantity, entry_cost, settlement_fee, entry_cost, gross_proceeds,
+                 float(pnl), float(gross_proceeds-entry_cost-settlement_fee),
                  memory.db.json({'outcome':outcome,'resolved_yes':resolved_yes,'source':source})))
 
     measured_process_score=max(0.0,min(1.0,process_score if process_score is not None else (1.0 if pnl>0 and evidence_complete else .5 if evidence_complete else .25)))

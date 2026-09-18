@@ -169,6 +169,23 @@ def test_decision_record_accepts_settlement_attribution():
  decision.counterfactuals={'status':'estimate_not_causal'}
  assert decision.attribution['metrics']['selected_expected_utility']==.1
 
+def test_settlement_state_writes_events_on_supplied_connection(monkeypatch):
+ from threading import RLock
+ from app.memory import TradingMemory
+ from app.models import HotState
+ class Connection:
+  def __init__(self): self.calls=[]
+  def execute(self,*args): self.calls.append(args)
+ class Database:
+  @staticmethod
+  def json(value): return value
+ connection=Connection();events=[]
+ monkeypatch.setattr('app.memory.insert_canonical_event_json',lambda c,db,event: events.append(c))
+ memory=TradingMemory.__new__(TradingMemory);memory.db=Database();memory.lock=RLock()
+ decision=DecisionRecord(id='settlement-state',mode=Mode.PAPER,market_id='m',strategy_id='s',action='BUY',side='YES',size=.01,price=.4,fair_probability=.7,confidence=.8,risk_score=5,edge=.2,rationale='test')
+ memory.save_settlement_state(decision,HotState(),connection=connection,eda_events=[{'event':'test'}])
+ assert events==[connection] and len(connection.calls)==2
+
 def test_market_input_measures_contract_quote_skew():
  item={'id':'skewed-books','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}
  yes=OrderBook(token_id='yes-token',observed_at='2026-08-21T00:00:00Z',asks=[BookLevel(price=.6,size=.02)],best_ask=.6)

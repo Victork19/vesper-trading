@@ -62,7 +62,7 @@ class TradingMemory:
    timestamp=now_iso()
    c.execute('INSERT INTO memory(tier,key,value,updated_at) VALUES(%s,%s,%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at',('HOT','state',self.db.json(hot.model_dump()),timestamp))
    c.execute('INSERT INTO memory(tier,key,value,updated_at) VALUES(%s,%s,%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at',('COLD',decision.id,self.db.json(decision.model_dump()),timestamp))
-  for event in eda_events or []: insert_canonical_event_json(c,self.db,event)
+   for event in eda_events or []: insert_canonical_event_json(c,self.db,event)
   with self.lock:
    if connection is not None:write(connection)
    else:
