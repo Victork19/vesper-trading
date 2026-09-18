@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from decimal import Decimal
 from typing import Any
 
@@ -26,6 +27,7 @@ def settle_decision(
     source: str = "operator",
     resolution: dict[str, Any] | None = None,
     process_score: float | None = None,
+    decision_lock_held: bool = False,
 ) -> DecisionRecord:
     """Apply one terminal outcome to a decision and update learning state."""
     if decision.outcome != "pending":
@@ -95,7 +97,12 @@ def settle_decision(
     }, event_time=decision.resolved_at, episode_id=decision.episode_id, source_event_id=decision.id,
        quality=EventQuality(confidence=1.0, valid=True))
 
-    with memory.decision_lock(decision.id):
+    # API/manual settlement and the automatic resolver both validate under
+    # the decision lock. Do not acquire the PostgreSQL advisory lock twice:
+    # transaction-scoped advisory locks are held by different connections
+    # here, so nesting them would deadlock the resolver on every trade.
+    decision_guard = nullcontext() if decision_lock_held else memory.decision_lock(decision.id)
+    with decision_guard:
       with memory.portfolio_lock() as portfolio_connection:
         hot = memory.hot_for_update(portfolio_connection)
         hot.daily_pnl += pnl

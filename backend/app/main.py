@@ -714,7 +714,7 @@ def outcome(req:OutcomeRequest,_=Depends(require_settlement_admin)):
    if d.execution_reconciled and (d.executed_average_price is None or d.executed_size<=0):raise HTTPException(409,'Execution is terminal but immutable fill price is missing')
    effective_size=d.executed_size if d.execution_reconciled else d.size*d.paper_fill_fraction;entry=d.executed_average_price if d.execution_reconciled and d.executed_average_price is not None else d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price;terminal_value=req.close_price if d.side=='YES' else 1-req.close_price;settled_pnl=effective_size*(terminal_value-entry)-float(d.executed_fees if d.execution_reconciled else 0)
   elif req.outcome in ('win','loss') and req.close_price is None:raise HTTPException(422,'win/loss settlement requires resolved_yes or terminal close_price 0/1')
-  return settle_decision(memory,metrics_engine,scars,d,req.outcome,settled_pnl,req.clv,resolved_yes,req.evidence_complete,'operator',process_score=req.process_score)
+  return settle_decision(memory,metrics_engine,scars,d,req.outcome,settled_pnl,req.clv,resolved_yes,req.evidence_complete,'operator',process_score=req.process_score,decision_lock_held=True)
 @app.post('/demo/clear-learning')
 def clear_learning(_=Depends(require_admin)):
  if settings.deployment_stage!='paper' or os.getenv('VESPER_ENV','development').lower() in {'production','prod'}:raise safe_http(404,'not_found')

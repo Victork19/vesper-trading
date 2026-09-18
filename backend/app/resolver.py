@@ -91,11 +91,12 @@ class OutcomeResolver:
                             unresolved += 1
                             continue
                         outcome, pnl = result
-                        settle_decision(self.memory,self.metrics,self.scars,current,outcome,pnl,clv=0.0,resolved_yes=resolved_yes,evidence_complete=True,source="polymarket_resolver",resolution={"market_id":market_id,"closed":market.get("closed"),"resolved":market.get("resolved"),"outcomes":market.get("outcomes"),"outcomePrices":market.get("outcomePrices")},process_score=1.0 if outcome=='win' else 0.0)
+                        settle_decision(self.memory,self.metrics,self.scars,current,outcome,pnl,clv=0.0,resolved_yes=resolved_yes,evidence_complete=True,source="polymarket_resolver",resolution={"market_id":market_id,"closed":market.get("closed"),"resolved":market.get("resolved"),"outcomes":market.get("outcomes"),"outcomePrices":market.get("outcomePrices")},process_score=1.0 if outcome=='win' else 0.0,decision_lock_held=True)
                         settled += 1
                 self._clear_retry(market_id)
             except Exception as exc:
                 errors += 1
+                log.warning('resolution failed market=%s error=%s',market_id,exc)
                 self._record_retry(market_id,exc)
                 telemetry.error("outcome_resolution")
                 continue
