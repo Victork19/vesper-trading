@@ -23,8 +23,8 @@ def binary_token_pair(item):
  yes=no=None
  for token,label in zip(tokens,outcomes):
   text=str(label).strip().lower()
-  if text in ('yes','true'):yes=str(token)
-  elif text in ('no','false'):no=str(token)
+  if text in ('yes','true','up'):yes=str(token)
+  elif text in ('no','false','down'):no=str(token)
  if yes is None or no is None or yes==no:return None,None
  return yes,no
 

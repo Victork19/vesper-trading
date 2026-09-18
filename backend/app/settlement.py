@@ -188,8 +188,8 @@ def parse_terminal_resolution(market: dict[str, Any]) -> bool | None:
     explicit_winner = market.get("winner") or market.get("winningOutcome") or market.get("winning_outcome") or market.get("finalOutcome") or market.get("final_outcome") or market.get("result")
     if explicit_winner is not None:
         label = str(explicit_winner).strip().lower()
-        if label in ("yes", "true", "1"): return True
-        if label in ("no", "false", "0"): return False
+        if label in ("yes", "true", "1", "up"): return True
+        if label in ("no", "false", "0", "down"): return False
     try:
         prices = [float(value) for value in prices]
     except (TypeError, ValueError):
@@ -200,9 +200,9 @@ def parse_terminal_resolution(market: dict[str, Any]) -> bool | None:
     winner = next(index for index, value in enumerate(prices) if value >= .999)
     if isinstance(outcomes, list) and len(outcomes) > winner:
         label = str(outcomes[winner]).strip().lower()
-        if label in ("yes", "true", "1"):
+        if label in ("yes", "true", "1", "up"):
             return True
-        if label in ("no", "false", "0"):
+        if label in ("no", "false", "0", "down"):
             return False
         return None
     # Polymarket binary markets conventionally order outcomes as Yes, No.

@@ -30,6 +30,9 @@ def test_binary_token_pair_requires_explicit_yes_and_no_labels():
  assert binary_token_pair({'outcomes':['No','Yes'],'clobTokenIds':['no-token','yes-token']})==('yes-token','no-token')
  assert binary_token_pair({'outcomes':['A','B'],'clobTokenIds':['a-token','b-token']})==(None,None)
 
+def test_binary_token_pair_accepts_up_down_markets():
+ assert binary_token_pair({'outcomes':['Up','Down'],'clobTokenIds':['up-token','down-token']})==('up-token','down-token')
+
 def test_buyable_ask_only_book_is_executable():
  item={'id':'ask-only','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}
  observed=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')
@@ -43,6 +46,10 @@ def test_stale_candle_series_is_rejected():
 
 def test_explicit_terminal_winner_is_supported():
  assert parse_terminal_resolution({'closed':True,'resolved':True,'finalOutcome':'Yes'}) is True
+
+def test_up_down_terminal_prices_are_supported():
+ assert parse_terminal_resolution({'closed':True,'resolved':True,'outcomes':['Up','Down'],'outcomePrices':['1','0']}) is True
+ assert parse_terminal_resolution({'closed':True,'resolved':True,'outcomes':['Up','Down'],'outcomePrices':['0','1']}) is False
 
 def test_paper_fill_model_is_depth_aware_and_replayable():
  class Market:
