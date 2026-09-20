@@ -26,8 +26,20 @@ class PostgresDatabase:
                 statement_timeout=max(1000,int(os.getenv('DATABASE_STATEMENT_TIMEOUT_MS','15000')))
                 lock_timeout=max(100,int(os.getenv('DATABASE_LOCK_TIMEOUT_MS','5000')))
                 idle_timeout=max(1000,int(os.getenv('DATABASE_IDLE_TRANSACTION_TIMEOUT_MS','30000')))
+                connect_timeout=max(1,int(os.getenv('DATABASE_CONNECT_TIMEOUT_SECONDS','10')))
+                pool_wait_timeout=max(1,float(os.getenv('DATABASE_POOL_WAIT_TIMEOUT_SECONDS',str(connect_timeout * 2))))
                 options=f'-c statement_timeout={statement_timeout} -c lock_timeout={lock_timeout} -c idle_in_transaction_session_timeout={idle_timeout}'
-                PostgresDatabase._pool=ConnectionPool(conninfo=self.database_url,min_size=2,max_size=max(2,int(os.getenv('DATABASE_POOL_MAX','4'))),kwargs={'autocommit':False,'row_factory':dict_row,'connect_timeout':max(1,int(os.getenv('DATABASE_CONNECT_TIMEOUT_SECONDS','10'))),'options':options},open=True);PostgresDatabase._pool.wait()
+                pool=ConnectionPool(conninfo=self.database_url,min_size=2,max_size=max(2,int(os.getenv('DATABASE_POOL_MAX','4'))),timeout=pool_wait_timeout,reconnect_timeout=pool_wait_timeout,kwargs={'autocommit':False,'row_factory':dict_row,'connect_timeout':connect_timeout,'options':options},open=True)
+                PostgresDatabase._pool=pool
+                try:
+                    # psycopg_pool otherwise keeps reconnecting for its default
+                    # five minutes, which makes API imports and health checks
+                    # look hung when Postgres is unavailable.
+                    pool.wait(timeout=pool_wait_timeout)
+                except Exception as exc:
+                    pool.close()
+                    PostgresDatabase._pool=None
+                    raise RuntimeError(f'Unable to connect to PostgreSQL within {pool_wait_timeout:g}s') from exc
     @property
     def pool(self): return PostgresDatabase._pool
     @contextmanager
