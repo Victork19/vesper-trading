@@ -8,6 +8,7 @@ This guide deploys the Vesper backend and ingestion worker on Ubuntu EC2, with N
 Cloudflare Pages -> HTTPS -> EC2 Nginx -> trading API :8000
                                       -> PostgreSQL :5432 (private Compose network)
                                       -> ingestion worker
+                                      -> scheduled backup -> private S3 bucket
 ```
 
 Port 8000 must never be exposed publicly.
@@ -49,14 +50,17 @@ cd ~/vesper-trading
 
 ```bash
 cp backend/.env.example backend/.env
+cp backend/backup.env.example backend/backup.env
 chmod 600 backend/.env
+chmod 600 backend/backup.env
 openssl rand -base64 48
 openssl rand -base64 48
 openssl rand -base64 48
 nano backend/.env
+nano backend/backup.env
 ```
 
-Use separate generated values for the client key, admin key, and operator approval code. Never commit `backend/.env`.
+Use separate generated values for the client key, admin key, and operator approval code. Never commit `backend/.env` or `backend/backup.env`.
 
 Recommended paper/shadow values:
 
@@ -112,11 +116,62 @@ persists decisions, EDA episodes/events, market evidence, orders, fills,
 accounting, security, configuration history, replay results, model registry
 records, opportunities, and durable observability samples in PostgreSQL.
 
-For VPS-loss protection, configure `BACKUP_UPLOAD_COMMAND` so
-`deploy/backup.sh` copies each dump and its SHA-256 checksum to remote object
-storage or another machine. Supabase or another managed PostgreSQL service is
-also supported: set `BACKUP_DATABASE_SOURCE=url` and use its external
-`DATABASE_URL`.
+For VPS-loss protection, configure `backend/backup.env` with a private S3
+destination. The `backup` Compose service creates a custom-format dump every
+15 minutes, uploads the dump and checksum, and keeps only a short local
+retention window. Supabase or another managed PostgreSQL service is also
+supported: set `BACKUP_DATABASE_SOURCE=url` for the manual `deploy/backup.sh`
+path.
+
+### Create the remote S3 destination
+
+In AWS S3, create a private bucket in the same region as the VPS, keep Block
+Public Access enabled, and optionally enable versioning and a lifecycle rule
+for old backup objects. The destination value is the bucket URI, for example:
+
+```dotenv
+BACKUP_S3_URI=s3://my-private-vesper-backups/vesper
+AWS_REGION=eu-west-3
+```
+
+For credentials, create a dedicated IAM user or role used only for this
+prefix. A minimal IAM policy is:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::my-private-vesper-backups",
+      "Condition": { "StringLike": { "s3:prefix": ["vesper", "vesper/*"] } }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::my-private-vesper-backups/vesper/*"
+    }
+  ]
+}
+```
+
+Create an access key under IAM → Users → the upload-only user → Security
+credentials → Create access key, then put the returned values in the ignored
+`backend/backup.env` file:
+
+```dotenv
+BACKUP_S3_URI=s3://my-private-vesper-backups/vesper
+AWS_REGION=eu-west-3
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+```
+
+Never commit `backend/backup.env` or put these credentials in the public
+frontend. AWS documents S3 bucket creation, object uploads, and IAM policies in
+[the S3 bucket guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/create-bucket-overview.html),
+[the upload guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/upload-objects.html),
+and [the S3 policy examples](https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-policies-s3.html).
 
 To migrate existing Supabase data into the new local database, create an
 external dump first, then restore it into the stopped local database:
@@ -264,6 +319,20 @@ Critical alerts:
 Keep the system in paper mode while any critical alert is active.
 
 ## 10. Backups and restore
+
+The scheduled `backup` service runs every 15 minutes after PostgreSQL is
+healthy. Inspect it with:
+
+```bash
+docker compose -f backend/docker-compose.yml logs --tail=100 backup
+docker compose -f backend/docker-compose.yml exec backup ls -lh /backups
+```
+
+The container uploads each custom-format dump and SHA-256 checksum to
+`BACKUP_S3_URI`. A private S3 bucket and upload-only IAM identity must be
+configured in `backend/backup.env` before starting the full stack.
+
+For an immediate manual backup or recovery operation:
 
 ```bash
 chmod +x deploy/backup.sh

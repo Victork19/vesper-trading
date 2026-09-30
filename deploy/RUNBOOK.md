@@ -40,8 +40,8 @@ Store the returned key in the secret manager, replace the configured client key,
 
 ## Backups
 
-Back up before migrations or recovery. The backup script runs `pg_dump` inside
-the local PostgreSQL container by default, creates a checksum, and can upload
-both files using `BACKUP_UPLOAD_COMMAND`. Copy resulting dump files off-host
-and test restoration regularly. For an external database, set
-`BACKUP_DATABASE_SOURCE=url`.
+The scheduled `backup` container runs `pg_dump` every 15 minutes, creates a
+checksum, and uploads both files to the configured S3 destination. Inspect it
+with `docker compose -f backend/docker-compose.yml logs backup`. Back up before
+migrations or recovery and test restoration regularly. The manual script is
+also available; for an external database, set `BACKUP_DATABASE_SOURCE=url`.

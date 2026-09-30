@@ -54,7 +54,10 @@ cd ~
 git clone https://github.com/YOUR_USER/vesper-trading.git
 cd ~/vesper-trading
 cp backend/.env.example backend/.env
+cp backend/backup.env.example backend/backup.env
+chmod 600 backend/.env backend/backup.env
 nano backend/.env
+nano backend/backup.env
 ```
 
 Recommended initial values:
@@ -88,7 +91,8 @@ MAX_LIVE_CAPITAL=0
 MAX_LIVE_ORDER_SIZE=0
 ```
 
-Never commit `backend/.env`. Do not put a private key in it for paper mode.
+Never commit `backend/.env` or `backend/backup.env`. Do not put a private key
+in `backend/.env` for paper mode.
 
 ## 4. Database
 
@@ -96,6 +100,11 @@ PostgreSQL 16 runs as the `db` Compose service. It is not published to the
 internet; application containers connect to it over the private Compose
 network. Its data is persisted in the `postgres_data` Docker volume. Sibyl is
 optional and disabled by default.
+
+The `backup` service runs every 15 minutes and uploads dumps to the S3 URI in
+`backend/backup.env`. Create a private S3 bucket and an upload-only IAM
+identity before starting the stack. See the detailed S3 policy instructions in
+[`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 ## 5. Start the API and ingestion worker
 
@@ -219,9 +228,10 @@ Operational telemetry is available at `/observability`, active alerts at `/alert
 
 API credentials are scoped: the client key can read and submit paper/shadow decisions, while the admin key controls mode and operator actions. Rotate credentials with `POST /operator/rotate-key`; the key identity is persisted in Postgres, while the returned secret must be stored in the secret manager/environment because it cannot be recovered later. Never ship `VITE_ADMIN_KEY` in a public frontend build; use it only for an internal operator build.
 
-The database runs in the PostgreSQL Docker container. Use `deploy/backup.sh`
-for `pg_dump` backups. Configure `BACKUP_UPLOAD_COMMAND` so the dump and
-checksum leave the EC2 instance.
+The scheduled `backup` container runs `pg_dump` directly against the Docker
+PostgreSQL service and uploads the dump and checksum to S3. Use
+`docker compose -f backend/docker-compose.yml logs backup` to inspect it.
+`deploy/backup.sh` remains available for immediate manual backups.
 
 ```bash
 chmod +x deploy/backup.sh
