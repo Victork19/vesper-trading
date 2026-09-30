@@ -40,4 +40,8 @@ Store the returned key in the secret manager, replace the configured client key,
 
 ## Backups
 
-Back up before migrations or recovery. The backup script runs `pg_dump` against the Supabase Postgres database. Copy resulting dump files off-host and test restoration regularly.
+Back up before migrations or recovery. The backup script runs `pg_dump` inside
+the local PostgreSQL container by default, creates a checksum, and can upload
+both files using `BACKUP_UPLOAD_COMMAND`. Copy resulting dump files off-host
+and test restoration regularly. For an external database, set
+`BACKUP_DATABASE_SOURCE=url`.

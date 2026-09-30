@@ -1,4 +1,19 @@
 services:
+  db:
+    image: postgres:16-alpine
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    stop_grace_period: 1m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   trading:
     build: .
     env_file:
@@ -12,6 +27,9 @@ services:
     mem_limit: 512m
     cpus: 1.0
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       # Docker health is liveness.  /ready intentionally depends on the
       # separately-running pipeline and must not gate nginx startup.
@@ -35,6 +53,8 @@ services:
     cpus: 1.0
     restart: unless-stopped
     depends_on:
+      db:
+        condition: service_healthy
       trading:
         condition: service_started
     healthcheck:
@@ -58,6 +78,8 @@ services:
     cpus: 0.5
     restart: unless-stopped
     depends_on:
+      db:
+        condition: service_healthy
       trading:
         condition: service_started
     healthcheck:
@@ -102,5 +124,6 @@ services:
       nginx:
         condition: service_healthy
 volumes:
+  postgres_data:
   certbot-webroot:
   letsencrypt:

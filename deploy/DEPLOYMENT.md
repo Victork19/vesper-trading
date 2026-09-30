@@ -6,7 +6,7 @@ This guide deploys the Vesper backend and ingestion worker on Ubuntu EC2, with N
 
 ```text
 Cloudflare Pages -> HTTPS -> EC2 Nginx -> trading API :8000
-                                      -> Supabase Postgres via Supavisor
+                                      -> PostgreSQL :5432 (private Compose network)
                                       -> ingestion worker
 ```
 
@@ -67,7 +67,12 @@ VESPER_COOKIE_SECURE=true
 VESPER_DOMAIN=api.example.com
 CERTBOT_EMAIL=ops@example.com
 
-DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
+POSTGRES_DB=vesper
+POSTGRES_USER=vesper
+POSTGRES_PASSWORD=long-random-url-safe-password
+DATABASE_URL=postgresql://vesper:long-random-url-safe-password@db:5432/vesper
+BACKUP_DATABASE_SOURCE=compose
+POSTGRES_SERVICE=db
 DATABASE_POOL_MAX=4
 SIBYL_OFFICIAL=0
 TRADING_MODE=paper
@@ -100,14 +105,37 @@ MAX_LIVE_CAPITAL=0
 MAX_LIVE_ORDER_SIZE=0
 ```
 
-`DATABASE_URL` must point to a managed or separately replicated PostgreSQL
-service such as Supabase for VPS-loss protection. Do not run the authoritative
-database on the same VPS disk as the application. Vesper persists decisions,
-EDA episodes/events, market evidence, orders, fills, accounting, security,
-configuration history, replay results, model registry records, opportunities,
-and durable observability samples in PostgreSQL. The local backup script is an
-additional export and must itself be copied to remote object storage; a backup
-left on the VPS does not protect against VPS disk loss.
+The default deployment runs PostgreSQL 16 in Docker on a private Compose
+network. Its data is stored in the persistent `postgres_data` Docker volume;
+the volume protects against container replacement, not VPS loss. Vesper
+persists decisions, EDA episodes/events, market evidence, orders, fills,
+accounting, security, configuration history, replay results, model registry
+records, opportunities, and durable observability samples in PostgreSQL.
+
+For VPS-loss protection, configure `BACKUP_UPLOAD_COMMAND` so
+`deploy/backup.sh` copies each dump and its SHA-256 checksum to remote object
+storage or another machine. Supabase or another managed PostgreSQL service is
+also supported: set `BACKUP_DATABASE_SOURCE=url` and use its external
+`DATABASE_URL`.
+
+To migrate existing Supabase data into the new local database, create an
+external dump first, then restore it into the stopped local database:
+
+```bash
+BACKUP_DATABASE_SOURCE=url \
+DATABASE_URL='postgresql://USER:PASSWORD@HOST:5432/DATABASE' \
+./deploy/backup.sh
+
+set -a; . backend/.env; set +a
+docker compose -f backend/docker-compose.yml up -d db
+cat backups/trading-postgres-REPLACE_WITH_DUMP.dump | \
+  docker compose -f backend/docker-compose.yml exec -T db \
+  pg_restore --clean --if-exists --no-owner \
+  --username="$POSTGRES_USER" --dbname="$POSTGRES_DB"
+```
+
+Confirm the dump filename and target database before restoring. Start the
+application only after the restore completes.
 
 To reclaim existing high-volume rows immediately after deployment, call the
 admin-only retention endpoint:
@@ -119,12 +147,12 @@ curl -X POST -H "X-Vesper-Key: $VESPER_ADMIN_KEY" \
 
 Do not configure `POLYMARKET_PRIVATE_KEY` for paper mode.
 
-## 4. Start the backend
+## 4. Start the backend and database
 
 ```bash
-docker compose -f backend/docker-compose.yml up -d --build trading pipeline
+docker compose -f backend/docker-compose.yml up -d --build
 docker compose -f backend/docker-compose.yml ps
-docker compose -f backend/docker-compose.yml logs --tail=200 trading pipeline
+docker compose -f backend/docker-compose.yml logs --tail=200 db trading pipeline
 ```
 
 Verify locally on EC2:
@@ -238,11 +266,26 @@ Keep the system in paper mode while any critical alert is active.
 ## 10. Backups and restore
 
 ```bash
+chmod +x deploy/backup.sh
 ./deploy/backup.sh
-scp backups/trading-postgres-*.dump backup-host:/secure/vesper/
 ```
 
-The script creates a restricted PostgreSQL custom-format dump. Copy it off-host and test restoration on a separate database regularly; an untested archive is not a verified backup.
+The script creates a restricted PostgreSQL custom-format dump from the Docker
+database plus a SHA-256 checksum. Set an upload command before production use.
+The file path is available to the command as `$1`:
+
+```bash
+export BACKUP_UPLOAD_COMMAND='rclone copy "$1" remote:vesper/backups'
+./deploy/backup.sh
+```
+
+The upload command must include its destination configuration. Test restoration
+on a separate database regularly; an untested archive is not a verified backup.
+
+To restore a dump after stopping the writers, copy it into the database
+container and use `pg_restore --clean --if-exists --no-owner`. Restore only
+after confirming the target database and backup filename, because this replaces
+existing database objects.
 
 ## 11. Upgrade and rollback
 

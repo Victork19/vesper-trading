@@ -141,7 +141,8 @@ Paper execution records simulated fills. Shadow execution records accepted signa
 
 ## Persistence and reliability
 
-- Supabase/Postgres as the authoritative persistence layer.
+- PostgreSQL as the authoritative persistence layer, deployed locally in Docker
+  by default or connected to an external managed service.
 - Connection pooling with bounded pool size.
 - Transactional writes and database-backed advisory settlement locks.
 - Durable journal events and JSONB-backed memory tiers.

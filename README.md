@@ -20,7 +20,7 @@ npm install
 npm run dev
 ```
 
-Postgres is the source of truth. Sibyl is not required for persistence or paper-mode learning; structured scars, principles, process snapshots, decisions and the audit journal are stored in Supabase Postgres.
+Postgres is the source of truth. Sibyl is not required for persistence or paper-mode learning; structured scars, principles, process snapshots, decisions and the audit journal are stored in PostgreSQL. The Docker deployment runs PostgreSQL locally with a persistent volume; Supabase remains supported as an external database.
 
 ## Modes
 
@@ -44,7 +44,7 @@ docker compose -f backend/docker-compose.yml up -d --build
 curl http://localhost:8000/health
 ```
 
-The application database is Supabase Postgres. Configure `DATABASE_URL` with the Supavisor session-mode pooler connection string; no local SQLite volume is used.
+The Docker deployment includes a PostgreSQL 16 container and persists its data in the `postgres_data` Docker volume; no local SQLite volume is used. Set `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and the matching `DATABASE_URL` in `backend/.env` before starting the stack.
 
 Docker starts both the API and the continuous pipeline worker. The worker persists raw market snapshots, automatically evaluates qualified paper markets, resolves terminal outcomes, and updates the learning layer. Check `/readiness/summary` for paper-sample progress and the exact live blockers. Reaching a data or sample threshold never enables live capital automatically.
 
@@ -53,7 +53,10 @@ Readiness uses independent exposed outcomes from the currently active model vers
 Recommended backend settings:
 
 ```env
-DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
+POSTGRES_DB=vesper
+POSTGRES_USER=vesper
+POSTGRES_PASSWORD=replace-with-a-long-random-url-safe-password
+DATABASE_URL=postgresql://vesper:replace-with-a-long-random-url-safe-password@db:5432/vesper
 AUTO_PAPER_ENABLED=true
 AUTO_PAPER_DECISIONS_PER_TICK=3
 AUTO_PAPER_EXPLORATION_ENABLED=true
@@ -87,7 +90,7 @@ The frontend uses `/markets/input/{market_id}` before evaluation to obtain a fre
 
 `/ready` reports explicit API, memory, data-quality, freshness, and live-safety checks. Live mode additionally requires a configured `OPERATOR_APPROVAL_CODE`, a successful `/operator/request-live`, positive capital/order limits, `LIVE_TRADING_ENABLED=true`, a sufficient chronological out-of-sample sample, and positive lower confidence bounds for OOS expectancy and Brier/log-loss lift versus the market baseline. Revoke approval with `/operator/revoke-live`.
 
-For production operations, review [SECURITY.md](SECURITY.md) and the [controlled deployment runbook](CONTROLLED_DEPLOYMENT.md), run the paper/shadow gates, and use `deploy/backup.sh` for Supabase Postgres backups. The frontend overview includes an autonomous-readiness summary showing decisions, resolved outcomes, win rate, data quality, sample progress and live blockers.
+For production operations, review [SECURITY.md](SECURITY.md) and the [controlled deployment runbook](CONTROLLED_DEPLOYMENT.md), run the paper/shadow gates, and use `deploy/backup.sh` for PostgreSQL backups. Configure `BACKUP_UPLOAD_COMMAND` so dumps and checksums are copied off the VPS. The frontend overview includes an autonomous-readiness summary showing decisions, resolved outcomes, win rate, data quality, sample progress and live blockers.
 
 ## Verification and release gates
 
@@ -179,6 +182,6 @@ validated against resolved outcomes before any live consideration.
 
 ## Current implementation boundary
 
-The safe core is implemented: continuous Gamma/CLOB market ingestion, Supabase Postgres persistence, autonomous paper evaluation, automatic terminal resolution, exact quote/book provenance, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, calibration metrics, replay, audit events, Prometheus telemetry, and a readiness dashboard.
+The safe core is implemented: continuous Gamma/CLOB market ingestion, PostgreSQL persistence, autonomous paper evaluation, automatic terminal resolution, exact quote/book provenance, reference-class edge estimation, scar-adjusted trust, cooldowns, toxic-flow and capacity gates, kill switches, bucket suspension, paper/shadow adapters, process metrics, calibration metrics, replay, audit events, Prometheus telemetry, and a readiness dashboard.
 
 The live execution foundation is implemented behind a fail-closed service boundary. It includes authenticated CLOB-client integration, signer/funder and balance/allowance readiness checks, deterministic idempotent client order IDs, durable submission attempts, partial-fill reconciliation, cancellation, bounded retry policy, venue circuit breakers, account snapshots, and a durable emergency kill switch. The integration remains disabled until the operator configures a controlled account, completes the controlled-account test suite, and passes the statistical, wallet, venue-health, reconciliation, and approval gates. Postgres is authoritative and Sibyl is outside the critical learning path.

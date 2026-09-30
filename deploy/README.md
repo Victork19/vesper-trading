@@ -63,7 +63,12 @@ Recommended initial values:
 CORS_ORIGINS=https://YOUR-PAGES-PROJECT.pages.dev
 VESPER_ENV=production
 VESPER_COOKIE_SECURE=true
-DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-REGION.pooler.supabase.com:5432/postgres
+POSTGRES_DB=vesper
+POSTGRES_USER=vesper
+POSTGRES_PASSWORD=long-random-url-safe-password
+DATABASE_URL=postgresql://vesper:long-random-url-safe-password@db:5432/vesper
+BACKUP_DATABASE_SOURCE=compose
+POSTGRES_SERVICE=db
 DATABASE_POOL_MAX=4
 SIBYL_OFFICIAL=0
 TRADING_MODE=paper
@@ -87,7 +92,10 @@ Never commit `backend/.env`. Do not put a private key in it for paper mode.
 
 ## 4. Database
 
-Postgres is the source of truth. Use the Supabase shared Supavisor session-mode connection string on port `5432`; the free-tier shared pooler is IPv4-compatible, so no EC2 IPv6 setup is required. Sibyl is optional and disabled by default.
+PostgreSQL 16 runs as the `db` Compose service. It is not published to the
+internet; application containers connect to it over the private Compose
+network. Its data is persisted in the `postgres_data` Docker volume. Sibyl is
+optional and disabled by default.
 
 ## 5. Start the API and ingestion worker
 
@@ -211,7 +219,9 @@ Operational telemetry is available at `/observability`, active alerts at `/alert
 
 API credentials are scoped: the client key can read and submit paper/shadow decisions, while the admin key controls mode and operator actions. Rotate credentials with `POST /operator/rotate-key`; the key identity is persisted in Postgres, while the returned secret must be stored in the secret manager/environment because it cannot be recovered later. Never ship `VITE_ADMIN_KEY` in a public frontend build; use it only for an internal operator build.
 
-The database is hosted by Supabase Postgres. Use `deploy/backup.sh` for `pg_dump` backups.
+The database runs in the PostgreSQL Docker container. Use `deploy/backup.sh`
+for `pg_dump` backups. Configure `BACKUP_UPLOAD_COMMAND` so the dump and
+checksum leave the EC2 instance.
 
 ```bash
 chmod +x deploy/backup.sh
@@ -221,7 +231,10 @@ docker compose -f backend/docker-compose.yml logs --tail=200 trading
 docker compose -f backend/docker-compose.yml logs --tail=200 pipeline
 ```
 
-Copy backups off the EC2 instance and periodically test restoration. A backup on the same disk is not disaster recovery.
+Copy backups off the EC2 instance and periodically test restoration. A backup
+on the same disk is not disaster recovery. To continue using Supabase instead,
+set `BACKUP_DATABASE_SOURCE=url` and replace `DATABASE_URL` with the Supabase
+connection string.
 
 ## 11. Live-mode safety
 

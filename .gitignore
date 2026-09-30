@@ -9,6 +9,7 @@ dist/
 *.db
 *.sqlite*
 data/
+backups/
 .pytest_cache/
 .mypy_cache/
 .coverage
