@@ -48,7 +48,8 @@ class PaperExecution(ExecutionAdapter):
   filled=decision.size*decision.paper_fill_fraction
   status=OrderStatus.REJECTED if filled<=0 else OrderStatus.PARTIALLY_FILLED if filled+1e-12<decision.size else OrderStatus.FILLED
   execution_price=decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
-  return {'status':status.value,'capital_at_risk':0,'decision_id':decision.id,'client_order_id':'paper_'+uuid.uuid4().hex,'filled_size':filled,'average_fill_price':execution_price}
+  fee_rate=float((decision.market_context or {}).get('fee_rate',0) or 0)
+  return {'status':status.value,'capital_at_risk':filled*execution_price+filled*fee_rate,'decision_id':decision.id,'client_order_id':'paper_'+uuid.uuid4().hex,'filled_size':filled,'filled_notional':filled*execution_price,'filled_fees':filled*fee_rate,'average_fill_price':execution_price}
 class ShadowExecution(ExecutionAdapter):
  def execute(self,decision):return {'status':OrderStatus.ACCEPTED.value,'capital_at_risk':0,'decision_id':decision.id,'client_order_id':'shadow_'+uuid.uuid4().hex,'filled_size':0,'average_fill_price':None}
 class LiveExecution(ExecutionAdapter):

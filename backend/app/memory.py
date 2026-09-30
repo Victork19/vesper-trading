@@ -8,9 +8,26 @@ from .eda import default_objective_policy, episode_hash, insert_canonical_event_
 class TradingMemory:
  def __init__(self,database=None,path=None):
   self.db=database or PostgresDatabase();self.lock=threading.RLock()
-  if not self.get('HOT','state'): self.put('HOT','state',HotState().model_dump())
+  hot_state=self.get('HOT','state')
+  if not hot_state: self.put('HOT','state',HotState().model_dump())
+  elif 'paper_account_version' not in hot_state: self._migrate_paper_account()
   if not self.get('REFERENCE','constitution'): self.put('REFERENCE','constitution',{'rules':['No live trading by default.','No trade without sufficient liquidity and evidence.','Do nothing is always allowed.','Scars can only tighten constraints.','Never bypass a kill switch.']})
   if not self.get('REFERENCE','objective_policy'): self.put('REFERENCE','objective_policy',default_objective_policy().model_dump())
+ def _migrate_paper_account(self):
+  with self.lock:
+   with self.db.connection() as c:
+    row=c.execute("SELECT value FROM memory WHERE tier='HOT' AND key='state' FOR UPDATE").fetchone()
+    raw=row['value'] if row else {}
+    if 'paper_account_version' in raw:return
+    pnl_row=c.execute("""SELECT COALESCE(SUM(CASE WHEN value->>'pnl' IS NULL THEN 0 ELSE (value->>'pnl')::double precision END),0) AS pnl
+                        FROM memory
+                        WHERE tier='COLD' AND value ? 'action' AND value->>'mode'='paper'
+                          AND value->>'outcome' IN ('win','loss','push')""").fetchone()
+    state=HotState.model_validate(raw);historical_pnl=float(pnl_row['pnl'] or 0)
+    state.paper_realized_pnl=historical_pnl
+    state.paper_peak_equity=max(state.paper_starting_capital,state.paper_starting_capital+historical_pnl)
+    state.paper_account_version=1
+    c.execute("INSERT INTO memory(tier,key,value,updated_at) VALUES('HOT','state',%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",('HOT','state',self.db.json(state.model_dump()),now_iso()))
  def put(self,tier,key,value):
   with self.lock:
    with self.db.connection() as c:c.execute('INSERT INTO memory(tier,key,value,updated_at) VALUES(%s,%s,%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at',(tier,key,self.db.json(value),now_iso()))

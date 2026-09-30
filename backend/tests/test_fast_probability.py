@@ -85,7 +85,9 @@ def test_paper_execution_walks_depth_and_returns_vwap_price():
 def test_paper_execution_marks_partial_depth_as_partial_fill():
  from app.adapters import PaperExecution
  decision=DecisionRecord(id='partial',mode=Mode.PAPER,market_id='m',strategy_id='s',action='BUY',side='YES',size=.02,price=.4,fair_probability=.7,confidence=.8,risk_score=5,edge=.2,rationale='test',paper_fill_fraction=.5,paper_execution_price=.41)
- assert PaperExecution().execute(decision)['status']=='partially_filled'
+ result=PaperExecution().execute(decision)
+ assert result['status']=='partially_filled'
+ assert result['filled_notional']==.01*.41
 
 def test_paper_execution_preserves_zero_price_without_fallback():
  from app.adapters import PaperExecution
