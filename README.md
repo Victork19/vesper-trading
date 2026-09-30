@@ -40,15 +40,16 @@ Postgres is the source of truth. Sibyl is not required for persistence or paper-
 
 ```bash
 cp backend/.env.example backend/.env
+cp backend/backup.env.example backend/backup.env
 docker compose -f backend/docker-compose.yml up -d --build
 curl http://localhost:8000/health
 ```
 
-The Docker deployment includes a PostgreSQL 16 container and persists its data in the `postgres_data` Docker volume; no local SQLite volume is used. Set `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and the matching `DATABASE_URL` in `backend/.env` before starting the stack.
+The Docker deployment includes a PostgreSQL 16 container and a scheduled backup container. PostgreSQL persists its data in the `postgres_data` Docker volume; backups are uploaded from the `backup` service to S3. No local SQLite volume is used. Set `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, and the matching `DATABASE_URL` in `backend/.env`; configure `backend/backup.env` before starting the stack.
 
-Docker starts both the API and the continuous pipeline worker. The worker persists raw market snapshots, automatically evaluates qualified paper markets, resolves terminal outcomes, and updates the learning layer. Check `/readiness/summary` for paper-sample progress and the exact live blockers. Reaching a data or sample threshold never enables live capital automatically.
+Docker starts both the API and the continuous pipeline worker. The worker persists raw market snapshots, automatically evaluates qualified paper markets, places approximately `$1` verified research samples when a normal strategy has no edge, resolves terminal outcomes, and updates the learning layer. Check `/readiness/summary` for paper-sample progress and the exact live blockers. Reaching a data or sample threshold never enables live capital automatically.
 
-Readiness uses independent exposed outcomes from the currently active model version, keyed by strategy, market and regime. Historical model versions are never pooled into the active model's out-of-sample proof. Repeated evaluations of the same unresolved market do not count as new research evidence. A Polymarket paper evaluation without a reference rate, signal, or resolved reference-class history is recorded as a no-trade diagnostic with `reference_evidence_required`; the system never turns a missing model into a synthetic 50% probability.
+Readiness uses independent exposed outcomes from the currently active model version, keyed by strategy, market and regime. Historical model versions are never pooled into the active model's out-of-sample proof. Repeated evaluations of the same unresolved market do not count as new research evidence. A Polymarket paper evaluation without a reference rate, signal, or resolved reference-class history is recorded as a fixed-notional baseline research sample only when verified market data and both contract books pass quality checks; the system never turns a missing model into a synthetic 50% probability. Separate exploration fallbacks remain excluded from the 100-outcome gate.
 
 Recommended backend settings:
 
@@ -61,7 +62,9 @@ AUTO_PAPER_ENABLED=true
 AUTO_PAPER_DECISIONS_PER_TICK=3
 AUTO_PAPER_EXPLORATION_ENABLED=true
 AUTO_PAPER_EXPLORATION_MAX_PER_TICK=2
-AUTO_PAPER_EXPLORATION_SIZE=.01
+AUTO_PAPER_RESEARCH_SAMPLING_ENABLED=true
+AUTO_PAPER_RESEARCH_NOTIONAL_USD=1.00
+AUTO_PAPER_EXPLORATION_NOTIONAL_USD=.25
 AUTO_PAPER_MARKET_COOLDOWN_SECONDS=21600
 AUTO_PAPER_MAX_PER_TYPE_PER_TICK=1
 AUTO_PAPER_STRATEGY=reference_class
@@ -72,6 +75,10 @@ AUTO_PAPER_MARKET_PAGE_SIZE=100
 AUTO_PAPER_MARKET_PAGES=5
 PAPER_FEE_RATE=0.02
 PAPER_SLIPPAGE_BPS=10
+PAPER_MAX_PORTFOLIO_HEAT=5.00
+PAPER_MAX_MARKET_EXPOSURE=1.00
+PAPER_MAX_BUCKET_EXPOSURE=2.00
+PAPER_MAX_CORRELATED_EXPOSURE=3.00
 FAST_MODEL_ENABLED=true
 FAST_MODEL_LOOKBACK_MINUTES=30
 FAST_MODEL_CACHE_SECONDS=15
@@ -143,11 +150,14 @@ per pipeline tick (default `25`). Ambiguous, unresolved, manual, or unavailable 
 With `AUTO_PAPER_ENABLED=true` (the default), the pipeline evaluates a small rotating set of liquid markets in paper
 mode. It fetches a fresh CLOB book, avoids recently evaluated markets, and prioritizes markets nearest to resolution.
 The reference strategy records no-trade evaluations unless a genuine probability edge survives costs. When that strategy
-has no edge, the separate `paper_exploration` strategy can place a tiny fixed-size quote-selection sample when
-`AUTO_PAPER_EXPLORATION_ENABLED=true` (the default). Exploration positions are explicitly marked
+has no edge, the worker can place an approximately `$1` fixed-notional baseline research sample when
+`AUTO_PAPER_RESEARCH_SAMPLING_ENABLED=true` (the default). These samples use fresh verified books, are marked
+research-eligible, and increase the sample after independent resolution. If research sampling is unavailable, the separate
+`paper_exploration` strategy can place a smaller quote-selection sample when `AUTO_PAPER_EXPLORATION_ENABLED=true`.
+Exploration positions are explicitly marked
 `paper_exploration_v1`, are excluded from research reports, calibration, live-readiness samples and the 100-outcome gate,
 but still use real paper fills, settlement, PnL, scars and operational diagnostics. Tune its safety cap with
-`AUTO_PAPER_EXPLORATION_MAX_PER_TICK` and `AUTO_PAPER_EXPLORATION_SIZE`; tune discovery with
+`AUTO_PAPER_EXPLORATION_MAX_PER_TICK` and `AUTO_PAPER_EXPLORATION_NOTIONAL_USD`; tune discovery with
 `AUTO_PAPER_DECISIONS_PER_TICK`, `AUTO_PAPER_MARKET_COOLDOWN_SECONDS`, `AUTO_PAPER_MAX_PER_TYPE_PER_TICK`,
 `AUTO_PAPER_MIN_RESOLUTION_HOURS`, `AUTO_PAPER_MAX_RESOLUTION_HOURS`, and `AUTO_PAPER_PREFER_FAST_MARKETS`.
 Five-minute markets can increase sample throughput, but they require liquid books and realistic latency/slippage

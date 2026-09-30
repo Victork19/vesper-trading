@@ -204,8 +204,9 @@ def list_principles(_=Depends(require_api_key)):return memory.principles()
 @app.get('/memory/digest')
 def memory_digest(strategy_id:str='reference_class',market_type:str='unknown',market_id:str='unknown',regime:str='baseline',_=Depends(require_api_key)):
  return memory.memory_digest(strategy_id,market_type,market_id,regime)
-@app.get('/decisions',response_model=list[DecisionRecord])
-def list_decisions(_=Depends(require_api_key)):return memory.decisions()
+@app.get('/decisions')
+def list_decisions(limit:int=200,_=Depends(require_api_key)):
+ return jsonable_encoder([item.model_dump(mode='json') for item in memory.decisions()[:max(1,min(limit,1000))]])
 @app.get('/metrics',response_model=list[ProcessSnapshot])
 def metrics(_=Depends(require_api_key)):return memory.snapshots()
 @app.get('/replay/{decision_id}')
@@ -268,7 +269,8 @@ def register_eda_model(record:ModelRegistryRecord,principal=Depends(require_admi
  record.status=decision['status'];record.approved_by=decision['approved_by'];memory.save_model_registry(record)
  return {'record':record,'promotion':decision}
 @app.get('/eda/models')
-def list_eda_models(_=Depends(require_api_key)):return memory.model_registry()
+def list_eda_models(limit:int=200,_=Depends(require_api_key)):
+ return jsonable_encoder(memory.model_registry(max(1,min(limit,1000))))
 @app.get('/eda/memory/search')
 def search_eda_memory(query:str,limit:int=8,_=Depends(require_api_key)):
  memories=memory.all('semantic')+memory.all('procedural')+memory.all('failure')+memory.all('model')
@@ -372,7 +374,7 @@ def readiness_summary(_=Depends(require_api_key)):
   if not passed:blockers.append(f'Live statistical gate has not passed: {evidence}.')
  if not live_execution_reconciled():blockers.append('Authenticated Polymarket CLOB execution, wallet verification, or venue reconciliation is not ready.')
  learning='collecting' if not research_exposed else 'learning' if len(resolved_keys)<minimum else 'evidence_ready'
- return {'status':'paper_learning','learning_status':learning,'summary':f'{len(exposed)} exposed paper decisions ({len(exploration_exposed)} exploration-only; {len(research_exposed)} research-eligible); {len(resolved_keys)} research outcomes resolved; {len(pending_keys)} awaiting settlement.','automation':{'enabled':os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true','decisions_per_tick':max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3'))),'exploration_enabled':os.getenv('AUTO_PAPER_EXPLORATION_ENABLED','true').lower()=='true','exploration_max_per_tick':max(0,int(os.getenv('AUTO_PAPER_EXPLORATION_MAX_PER_TICK','2'))),'exploration_size':max(.0001,float(os.getenv('AUTO_PAPER_EXPLORATION_SIZE','.01'))),'cooldown_seconds':max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600'))),'min_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05'))),'max_resolution_hours':min(max(.01,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24'))),max(.01,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1')))),'fast_markets_only':os.getenv('FAST_MARKETS_ONLY','true').lower()=='true','fast_max_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1'))),'prefer_fast_markets':True},'paper':{'decisions':len(decisions),'exposed':len(exposed),'exploration_exposed':len(exploration_exposed),'exploration_resolved':len(exploration_resolved),'exploration_pending':len(exploration_pending),'exploration_pnl':exploration_pnl,'research_exposed':len(research_exposed),'independent_buckets':len({key(d) for d in research_exposed}),'resolved':resolved_count,'independent_resolved':len(resolved_keys),'pending':len(pending),'independent_pending':len(pending_keys),'wins':wins,'win_rate':wins/resolved_count if resolved_count else None,'pnl':pnl,'metrics_buckets':len(snapshots),'minimum_sample':minimum},'research':research_report(decisions),'data':{'snapshots':q['snapshots'],'minimum_snapshots':int(os.getenv('MIN_MARKET_SNAPSHOTS','1000')),'quality':q['score'],'book_coverage':q.get('book_coverage',0),'stale':q['stale']},'worker':{'status':worker.get('status'),'last_resolved':worker.get('last_resolved',0),'last_pending':worker.get('last_pending',0)},'live':{'eligible':False,'blockers':blockers}}
+ return {'status':'paper_learning','learning_status':learning,'summary':f'{len(exposed)} exposed paper decisions ({len(exploration_exposed)} exploration-only; {len(research_exposed)} research-eligible); {len(resolved_keys)} research outcomes resolved; {len(pending_keys)} awaiting settlement.','automation':{'enabled':os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true','decisions_per_tick':max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3'))),'research_sampling_enabled':os.getenv('AUTO_PAPER_RESEARCH_SAMPLING_ENABLED','true').lower()=='true','research_notional_usd':max(.1,float(os.getenv('AUTO_PAPER_RESEARCH_NOTIONAL_USD','1.0'))),'exploration_enabled':os.getenv('AUTO_PAPER_EXPLORATION_ENABLED','true').lower()=='true','exploration_max_per_tick':max(0,int(os.getenv('AUTO_PAPER_EXPLORATION_MAX_PER_TICK','2'))),'exploration_notional_usd':max(.01,float(os.getenv('AUTO_PAPER_EXPLORATION_NOTIONAL_USD','.25'))),'cooldown_seconds':max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600'))),'min_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05'))),'max_resolution_hours':min(max(.01,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24'))),max(.01,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1')))),'fast_markets_only':os.getenv('FAST_MARKETS_ONLY','true').lower()=='true','fast_max_resolution_hours':max(.01,float(os.getenv('AUTO_PAPER_FAST_MAX_RESOLUTION_HOURS','1'))),'prefer_fast_markets':True},'paper':{'decisions':len(decisions),'exposed':len(exposed),'exploration_exposed':len(exploration_exposed),'exploration_resolved':len(exploration_resolved),'exploration_pending':len(exploration_pending),'exploration_pnl':exploration_pnl,'research_exposed':len(research_exposed),'independent_buckets':len({key(d) for d in research_exposed}),'resolved':resolved_count,'independent_resolved':len(resolved_keys),'pending':len(pending),'independent_pending':len(pending_keys),'wins':wins,'win_rate':wins/resolved_count if resolved_count else None,'pnl':pnl,'metrics_buckets':len(snapshots),'minimum_sample':minimum},'research':research_report(decisions),'data':{'snapshots':q['snapshots'],'minimum_snapshots':int(os.getenv('MIN_MARKET_SNAPSHOTS','1000')),'quality':q['score'],'book_coverage':q.get('book_coverage',0),'stale':q['stale']},'worker':{'status':worker.get('status'),'last_resolved':worker.get('last_resolved',0),'last_pending':worker.get('last_pending',0)},'live':{'eligible':False,'blockers':blockers}}
 
 def _research_probability(decision):
  value=decision.model_probability if decision.model_version and decision.model_probability is not None else decision.fair_probability
@@ -538,6 +540,12 @@ def rollback_operator_config(payload:dict,principal=Depends(require_admin)):
  runtime_config.sync_process(result['values']);settings.max_portfolio_heat=float(result['values'].get('MAX_PORTFOLIO_HEAT',settings.max_portfolio_heat));strategies.items['relative_microstructure'].enabled=bool(result['values'].get('EXPERIMENTAL_STRATEGY_ENABLED',False))
  memory.event('runtime_config_changed',{'version':result['version'],'rollback_from':payload.get('version'),'actor':getattr(principal,'key_id','admin')})
  return result
+def _paper_notional_size(market, estimate, target_notional):
+ cost=max(1e-9,float(estimate.executable_price))
+ paper_heat_cap=max(float(settings.max_portfolio_heat),float(os.getenv('PAPER_MAX_PORTFOLIO_HEAT','5.0')))
+ remaining=max(0.0,paper_heat_cap-float(memory.hot().portfolio_heat))
+ return max(0.0,min(float(target_notional),remaining)/cost)
+
 def _paper_exploration_size(market, estimate):
  # Exploration is deliberately not a prediction. It samples the cheapest
  # executable side with a tiny, fixed contract amount so that fills and
@@ -545,17 +553,21 @@ def _paper_exploration_size(market, estimate):
  # supplied an edge.
  if market.liquidity<1000 or (market.volume_known and market.volume_24h<5000):return 0,['exploration_liquidity_gate']
  if market.market_status!='active' or estimate.executable_price<=0:return 0,['exploration_market_gate']
- configured=min(.01,max(0.0001,float(os.getenv('AUTO_PAPER_EXPLORATION_SIZE','.01'))))
- cost=max(1e-9,float(estimate.executable_price))
- remaining=max(0.0,float(settings.max_portfolio_heat)-float(memory.hot().portfolio_heat))
- size=min(configured,remaining/cost)
+ configured=max(0.01,float(os.getenv('AUTO_PAPER_EXPLORATION_NOTIONAL_USD','1.0')))
+ size=_paper_notional_size(market,estimate,configured)
  return max(0.0,size),['paper_exploration_fixed_size','research_evidence_excluded'] if size>0 else ['portfolio_heat_gate']
+
+def _paper_research_sample_size(market, estimate):
+ if market.liquidity<1000 or (market.volume_known and market.volume_24h<5000):return 0
+ if market.market_status!='active' or estimate.executable_price<=0:return 0
+ return _paper_notional_size(market,estimate,max(0.01,float(os.getenv('AUTO_PAPER_RESEARCH_NOTIONAL_USD','1.0'))))
 
 def _decide_impl(req:DecisionRequest):
  h=memory.hot();strategy=strategies.get(req.strategy_id)
  if not strategy:raise HTTPException(422,f'Unknown strategy: {req.strategy_id}')
  if not strategy.enabled:raise HTTPException(403,f'Strategy disabled: {req.strategy_id}')
  if req.exploration and (h.mode!=Mode.PAPER or req.strategy_id!='paper_exploration'):raise HTTPException(422,'Exploration is only available through the paper_exploration strategy in paper mode.')
+ if req.paper_research_sample and (h.mode!=Mode.PAPER or req.exploration):raise HTTPException(422,'Paper research sampling is only available for non-exploration paper decisions.')
  history=[1 if d.resolved_yes else 0 for d in memory.decisions() if d.market_type==req.market.market_type and d.resolved_yes is not None]
  if req.strategy_id=='relative_microstructure':
   experimental=experimental_estimate(req.market)
@@ -573,7 +585,11 @@ def _decide_impl(req:DecisionRequest):
  memory_candidates=memory.all('semantic')+memory.all('procedural')+memory.all('failure')+memory.all('model')
  retrieved_memories=rank_memories(memory_candidates,f'{req.market.question} {req.market.regime} {req.strategy_id}',limit=8)
  telemetry.inc('vesper_memory_retrievals_total',value=1,labels={'count':str(len(retrieved_memories))})
- size,gates=_paper_exploration_size(req.market,e) if req.exploration else risk.size(e,req.market,trust,strategy,settings.max_portfolio_heat);size*=memory.scar_size_multiplier(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
+ size,gates=_paper_exploration_size(req.market,e) if req.exploration else risk.size(e,req.market,trust,strategy,settings.max_portfolio_heat)
+ if req.paper_research_sample:
+  sample_size=_paper_research_sample_size(req.market,e)
+  if sample_size>0:size=sample_size;gates+=['paper_research_sample']
+ size*=memory.scar_size_multiplier(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime)
  quality_gates=[]
  quote_time=req.market.quote_observed_at or req.market.observed_at
  if quote_time is not None and (datetime.now(timezone.utc)-quote_time).total_seconds()>120:quality_gates.append('stale_market_input')
@@ -591,7 +607,7 @@ def _decide_impl(req:DecisionRequest):
  if quality_gates:size=0;gates+=quality_gates
  flow=toxic.inspect(req.market,req.flow_imbalance,req.large_wallet_signal);size,risk_reasons=portfolio.gate(req.market,size,req.flow_imbalance,req.large_wallet_signal,e.recommended_side);gates+=risk_reasons+flow['flags'];relevant=memory.active_scars(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime);principles=[p for p in memory.principles() if p.status=='active' and p.strategy_id in (req.strategy_id,'global')];cited=[s.id for s in relevant];cp=[p.id for p in principles]
  preferred_evaluation=next((item for item in action_evaluations if item.action==f'BUY {e.recommended_side}'),None)
- if not req.exploration and policy_proposal.status=='rejected' and preferred_evaluation is not None and preferred_evaluation.available and size>0:size=0;gates+=['consequence_policy_rejected']
+ if not req.exploration and not req.paper_research_sample and policy_proposal.status=='rejected' and preferred_evaluation is not None and preferred_evaluation.available and size>0:size=0;gates+=['consequence_policy_rejected']
  if bucket_killer.suspended(req.strategy_id,req.market.market_type,req.market.regime):size=0;gates+=['bucket_suspended_negative_expectancy']
  if any(s.impact.constitutional and s.impact.max_size_multiplier<=0 for s in relevant):size=0;gates+=['scar_constitutional_stop']
  if not req.evidence_complete:size=0;gates+=['evidence_completeness_gate']
@@ -609,14 +625,14 @@ def _decide_impl(req:DecisionRequest):
  fill_fraction=fill_profile['fill_fraction'];paper_execution_price=fill_profile['execution_price']
  if h.mode==Mode.PAPER and size>0 and fill_fraction<=0:
   size=0;paper_execution_price=None;fill_profile['reason']='paper_no_fill';gates.append('paper_no_fill')
- if h.mode==Mode.PAPER and size>0 and paper_execution_price is not None and paper_execution_price>=e.side_probability and not req.exploration:
+ if h.mode==Mode.PAPER and size>0 and paper_execution_price is not None and paper_execution_price>=e.side_probability and not req.exploration and not req.paper_research_sample:
   size=0;fill_fraction=0.0;paper_execution_price=None;fill_profile['reason']='paper_depth_erased_edge';gates.append('paper_depth_erased_edge')
- action='DO NOTHING' if size<=0 else 'BUY';risk_score=min(10,max(1,int(e.raw_edge*100+(10 if relevant else 3))));rationale=('No trade: '+'; '.join(gates)) if size<=0 else ('Exploration sample: fixed-size executable quote selection; excluded from live-readiness evidence.' if req.exploration else 'Calibrated probability, executable side edge, liquidity, capacity, trust, scars, and portfolio gates passed.');status='paper' if h.mode==Mode.PAPER else 'shadow' if h.mode==Mode.SHADOW else 'live-gated';fill_reason=fill_profile['reason']
+ action='DO NOTHING' if size<=0 else 'BUY';risk_score=min(10,max(1,int(e.raw_edge*100+(10 if relevant else 3))));rationale=('No trade: '+'; '.join(gates)) if size<=0 else ('Exploration sample: fixed-size executable quote selection; excluded from live-readiness evidence.' if req.exploration else 'Paper research sample: fixed-dollar executable quote selection for baseline outcome evidence.' if req.paper_research_sample else 'Calibrated probability, executable side edge, liquidity, capacity, trust, scars, and portfolio gates passed.');status='paper' if h.mode==Mode.PAPER else 'shadow' if h.mode==Mode.SHADOW else 'live-gated';fill_reason=fill_profile['reason']
  paper_reference_price=req.market.price if e.recommended_side=='YES' else 1-req.market.price
  execution_price=paper_execution_price if paper_execution_price is not None else e.executable_price
  paper_cost=max(0.0,(execution_price-paper_reference_price)*size*fill_fraction) if h.mode==Mode.PAPER else 0.0
  paper_ev=(e.side_probability-execution_price)*size*fill_fraction if h.mode==Mode.PAPER else e.raw_edge*size*fill_fraction
- d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=paper_ev,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,model_version='paper_exploration_v1' if req.exploration else req.market.model_version,model_provenance=({'provider':'paper_exploration','version':'paper_exploration_v1','selection':'lowest executable ask','underlying_model':req.market.model_version} if req.exploration else req.market.model_provenance),raw_model_probability=req.market.raw_model_probability,model_probability=req.market.model_probability,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence,fill_model_version='paper_microstructure_v1' if h.mode==Mode.PAPER else None,model_lower_bound=req.market.model_lower_bound,model_upper_bound=req.market.model_upper_bound,model_uncertainty=req.market.model_uncertainty,model_calibration_samples=req.market.model_calibration_samples,model_calibration_status=req.market.model_calibration_status,paper_fill_fraction=fill_fraction,paper_execution_price=paper_execution_price,paper_cost=paper_cost,paper_fill_reason=fill_reason,research_eligible=(not req.exploration) and req.market.source.startswith('polymarket') and bool(req.market.snapshot_hash) and req.market.quote_observed_at is not None,market_context={'resolution_hours':req.market.resolution_hours,'market_end_time':req.market.market_end_time.isoformat() if req.market.market_end_time else None,'yes_bid':req.market.yes_bid,'yes_ask':req.market.yes_ask,'no_bid':req.market.no_bid,'no_ask':req.market.no_ask,'liquidity':req.market.liquidity,'volume_24h':req.market.volume_24h,'fee_rate':req.market.fee_rate,'slippage_bps':req.market.slippage_bps,'correlation_cluster':correlation_cluster(req.market),'event_family':event_family(req.market.question,req.market.market_type),'paper_exploration':req.exploration,'evidence_excluded_reason':'separate exploration strategy' if req.exploration else None})
+ d=DecisionRecord(id='decision_'+os.urandom(5).hex(),mode=h.mode,market_id=req.market.market_id,strategy_id=req.strategy_id,market_type=req.market.market_type,regime=req.market.regime,action=action,side=e.recommended_side if size else None,size=size,price=req.market.price,fair_probability=e.fair_probability,confidence=e.confidence,risk_score=risk_score,edge=e.raw_edge,executable_price=e.executable_price,expected_value=paper_ev,rationale=rationale,cited_scars=cited,cited_principles=cp,gates=gates,status=status,source=req.market.source,model_version='paper_exploration_v1' if req.exploration else req.market.model_version,model_provenance=({'provider':'paper_exploration','version':'paper_exploration_v1','selection':'lowest executable ask','underlying_model':req.market.model_version} if req.exploration else req.market.model_provenance),raw_model_probability=req.market.raw_model_probability,model_probability=req.market.model_probability,quality_score=req.market.quality_score,snapshot_hash=req.market.snapshot_hash,observed_at=req.market.observed_at.isoformat() if req.market.observed_at else None,quote_observed_at=req.market.quote_observed_at.isoformat() if req.market.quote_observed_at else None,book_sequence=req.market.book_sequence,fill_model_version='paper_microstructure_v1' if h.mode==Mode.PAPER else None,model_lower_bound=req.market.model_lower_bound,model_upper_bound=req.market.model_upper_bound,model_uncertainty=req.market.model_uncertainty,model_calibration_samples=req.market.model_calibration_samples,model_calibration_status=req.market.model_calibration_status,paper_fill_fraction=fill_fraction,paper_execution_price=paper_execution_price,paper_cost=paper_cost,paper_fill_reason=fill_reason,research_eligible=(not req.exploration) and req.market.source.startswith('polymarket') and bool(req.market.snapshot_hash) and req.market.quote_observed_at is not None,market_context={'resolution_hours':req.market.resolution_hours,'market_end_time':req.market.market_end_time.isoformat() if req.market.market_end_time else None,'yes_bid':req.market.yes_bid,'yes_ask':req.market.yes_ask,'no_bid':req.market.no_bid,'no_ask':req.market.no_ask,'liquidity':req.market.liquidity,'volume_24h':req.market.volume_24h,'fee_rate':req.market.fee_rate,'slippage_bps':req.market.slippage_bps,'correlation_cluster':correlation_cluster(req.market),'event_family':event_family(req.market.question,req.market.market_type),'paper_exploration':req.exploration,'paper_research_sample':req.paper_research_sample,'evidence_excluded_reason':'separate exploration strategy' if req.exploration else None})
  d.market_context['retrieved_memories']=retrieved_memories
  d.market_context.update({'yes_token_id':req.market.yes_token_id,'no_token_id':req.market.no_token_id,'yes_quote_observed_at':req.market.yes_quote_observed_at.isoformat() if req.market.yes_quote_observed_at else None,'no_quote_observed_at':req.market.no_quote_observed_at.isoformat() if req.market.no_quote_observed_at else None,'quote_skew_seconds':req.market.quote_skew_seconds,'yes_ask_levels':[level.model_dump() for level in req.market.yes_book_asks],'no_ask_levels':[level.model_dump() for level in req.market.no_book_asks]})
  d.market_context.update(canonical_dependency_metadata(req.market.question,req.market.market_type,market_id=req.market.market_id,resolution_end=req.market.market_end_time,source=req.market.source))

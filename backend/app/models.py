@@ -191,6 +191,7 @@ class DecisionRequest(BaseModel):
  strategy_id:str='reference_class'
  execute:bool=False
  exploration:bool=False
+ paper_research_sample:bool=False
  flow_imbalance:float=Field(default=0,ge=-1,le=1)
  large_wallet_signal:float=Field(default=0,ge=0,le=1)
  evidence_complete:bool=True

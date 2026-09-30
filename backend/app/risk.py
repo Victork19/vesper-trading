@@ -28,7 +28,8 @@ class PortfolioRisk:
   market_exposure=sum(self._exposure(d) for d in open_positions if d.market_id==m.market_id)
   bucket_exposure=sum(self._exposure(d) for d in open_positions if d.market_type==m.market_type and d.regime==m.regime)
   cluster=correlation_cluster(m);cluster_exposure=sum(self._exposure(d) for d in open_positions if (d.market_context or {}).get('correlation_cluster')==cluster)
-  market_cap=max(.01,float(os.getenv('MAX_MARKET_EXPOSURE','.05')));bucket_cap=max(market_cap,float(os.getenv('MAX_BUCKET_EXPOSURE','.10')));cluster_cap=max(bucket_cap,float(os.getenv('MAX_CORRELATED_EXPOSURE','.12')))
+  paper_mode=getattr(self.memory.hot().mode,'value',self.memory.hot().mode)=='paper'
+  market_cap=max(.01,float(os.getenv('PAPER_MAX_MARKET_EXPOSURE','1.0') if paper_mode else os.getenv('MAX_MARKET_EXPOSURE','.05')));bucket_cap=max(market_cap,float(os.getenv('PAPER_MAX_BUCKET_EXPOSURE','2.0') if paper_mode else os.getenv('MAX_BUCKET_EXPOSURE','.10')));cluster_cap=max(bucket_cap,float(os.getenv('PAPER_MAX_CORRELATED_EXPOSURE','3.0') if paper_mode else os.getenv('MAX_CORRELATED_EXPOSURE','.12')))
   benchmark=executable_benchmark(m,side)
   unit_cost=max(1e-9,float(benchmark['cost']))
   requested_capital=max(0,float(requested_size))*unit_cost
