@@ -140,9 +140,9 @@ class TradingMemory:
   return OrderRecord.model_validate(data)
  def order(self,order_id):
   with self.db.connection() as c:
-   return self._order(c.execute('SELECT * FROM orders WHERE id=%s',(order_id,)).fetchone())
+   return self._order(c.execute("SELECT o.*,COALESCE(d.value->>'outcome','pending') AS outcome,COALESCE((d.value->>'pnl')::double precision,0) AS pnl FROM orders o LEFT JOIN memory d ON d.tier='COLD' AND d.key=o.decision_id WHERE o.id=%s",(order_id,)).fetchone())
  def orders(self):
-  with self.db.connection() as c:return [self._order(r) for r in c.execute('SELECT * FROM orders ORDER BY created_at DESC').fetchall()]
+  with self.db.connection() as c:return [self._order(r) for r in c.execute("SELECT o.*,COALESCE(d.value->>'outcome','pending') AS outcome,COALESCE((d.value->>'pnl')::double precision,0) AS pnl FROM orders o LEFT JOIN memory d ON d.tier='COLD' AND d.key=o.decision_id ORDER BY o.created_at DESC").fetchall()]
  def snapshots(self):
   with self.db.connection() as c:return [ProcessSnapshot.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'expectancy' ORDER BY updated_at DESC").fetchall()]
  def active_scars(self,strategy_id='unknown',market_type='unknown',market_id='unknown',regime='unknown'):

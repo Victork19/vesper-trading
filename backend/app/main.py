@@ -208,7 +208,19 @@ def memory_digest(strategy_id:str='reference_class',market_type:str='unknown',ma
 def list_decisions(limit:int=200,_=Depends(require_api_key)):
  return jsonable_encoder([item.model_dump(mode='json') for item in memory.decisions(max(1,min(limit,1000)))])
 @app.get('/metrics',response_model=list[ProcessSnapshot])
-def metrics(_=Depends(require_api_key)):return memory.snapshots()
+def metrics(_=Depends(require_api_key)):
+ decisions=memory.decisions(1000);result=[]
+ for snapshot in memory.snapshots():
+  bucket=[d for d in decisions if d.strategy_id==snapshot.strategy_id and d.market_type==snapshot.market_type and d.regime==snapshot.regime and d.model_version==snapshot.model_version and d.outcome in ('win','loss','push')]
+  deployed=fees=0.0
+  for d in bucket:
+   quantity=float(d.executed_size or 0) if d.execution_reconciled else float(d.size or 0)*float(d.paper_fill_fraction or 0)
+   price=float(d.executed_average_price if d.execution_reconciled and d.executed_average_price is not None else d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price)
+   notional=float(d.executed_notional or 0) if d.executed_notional else quantity*price
+   fee=float(d.executed_fees or 0) if d.executed_fees else quantity*float((d.market_context or {}).get('fee_rate',0) or 0)
+   deployed+=notional+fee;fees+=fee
+  result.append(snapshot.model_copy(update={'capital_deployed':deployed,'fees':fees,'average_trade_pnl':snapshot.pnl/max(1,snapshot.decisions),'return_on_capital':snapshot.pnl/deployed if deployed else 0}))
+ return result
 @app.get('/replay/{decision_id}')
 def replay(decision_id,_=Depends(require_api_key)):
  x=memory.replay(decision_id)

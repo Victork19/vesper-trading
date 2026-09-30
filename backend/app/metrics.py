@@ -8,6 +8,11 @@ class MetricsEngine:
   key=f'{d.strategy_id}:{d.market_type}:{d.regime}:{d.model_version or "none"}'
   existing=next((x for x in self.memory.snapshots() if x.strategy_id==d.strategy_id and x.market_type==d.market_type and x.regime==d.regime and x.model_version==d.model_version),None) or ProcessSnapshot(strategy_id=d.strategy_id,market_type=d.market_type,regime=d.regime,model_version=d.model_version)
   prior=existing.decisions;existing.decisions+=1;existing.wins+=1 if pnl>0 else 0;existing.pnl+=pnl;existing.clv_sum+=clv;existing.gross_profit+=max(0,pnl);existing.gross_loss+=abs(min(0,pnl));existing.profit_factor=existing.gross_profit/existing.gross_loss if existing.gross_loss else existing.gross_profit;existing.expectancy=existing.pnl/max(1,existing.decisions);existing.decision_quality=(existing.decision_quality*prior+quality)/existing.decisions;existing.rule_adherence=(existing.rule_adherence*prior+(1 if d.gates and 'all_risk_gates_passed' in d.gates else 0))/existing.decisions
+  quantity=float(d.executed_size or 0) if d.execution_reconciled else float(d.size or 0)*float(d.paper_fill_fraction or 0)
+  price=float(d.executed_average_price if d.execution_reconciled and d.executed_average_price is not None else d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price)
+  notional=float(d.executed_notional or 0) if d.executed_notional else quantity*price
+  fees=float(d.executed_fees or 0) if d.executed_fees else quantity*float((d.market_context or {}).get('fee_rate',0) or 0)
+  existing.capital_deployed+=notional+fees;existing.fees+=fees;existing.average_trade_pnl=existing.pnl/max(1,existing.decisions);existing.return_on_capital=existing.pnl/existing.capital_deployed if existing.capital_deployed else 0
   if resolved_yes is not None:
    predicted=max(.000001,min(.999999,d.fair_probability));actual=1.0 if resolved_yes else 0.0;existing.brier_score=((existing.brier_score or 0)*prior+(predicted-actual)**2)/existing.decisions;existing.log_loss=((existing.log_loss or 0)*prior-(actual*math.log(predicted)+(1-actual)*math.log(1-predicted)))/existing.decisions;existing.calibration_error=((existing.calibration_error or 0)*prior+abs(predicted-actual))/existing.decisions
   categories=(attribution or {}).get('categories',{})
