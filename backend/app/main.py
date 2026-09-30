@@ -206,7 +206,7 @@ def memory_digest(strategy_id:str='reference_class',market_type:str='unknown',ma
  return memory.memory_digest(strategy_id,market_type,market_id,regime)
 @app.get('/decisions')
 def list_decisions(limit:int=200,_=Depends(require_api_key)):
- return jsonable_encoder([item.model_dump(mode='json') for item in memory.decisions()[:max(1,min(limit,1000))]])
+ return jsonable_encoder([item.model_dump(mode='json') for item in memory.decisions(max(1,min(limit,1000)))])
 @app.get('/metrics',response_model=list[ProcessSnapshot])
 def metrics(_=Depends(require_api_key)):return memory.snapshots()
 @app.get('/replay/{decision_id}')
@@ -284,11 +284,11 @@ def graph_edges(_=Depends(require_api_key)):return graph.edges()
 def audit(limit:int=200,_=Depends(require_api_key)):return memory.audit(max(1,min(limit,1000)))
 @app.get('/risk')
 def risk_state(_=Depends(require_api_key)):
- realized_pnl=sum(float(decision.pnl or 0) for decision in memory.decisions() if decision.outcome in ('win','loss','push'))
- return {'portfolio_heat':portfolio.heat(),'max_portfolio_heat':settings.max_portfolio_heat,'realized_pnl':realized_pnl,'daily_pnl':memory.hot().daily_pnl,'weekly_pnl':memory.hot().weekly_pnl,'correlation_regime':memory.hot().correlation_regime}
+ h=memory.hot();realized_pnl=h.paper_realized_pnl if h.mode==Mode.PAPER else sum(float(decision.pnl or 0) for decision in memory.decisions(1000) if decision.outcome in ('win','loss','push'));paper_equity=h.paper_starting_capital+h.paper_realized_pnl;paper_return=h.paper_realized_pnl/h.paper_starting_capital if h.paper_starting_capital>0 else 0
+ return {'portfolio_heat':portfolio.heat(),'max_portfolio_heat':settings.max_portfolio_heat,'realized_pnl':realized_pnl,'daily_pnl':h.daily_pnl,'weekly_pnl':h.weekly_pnl,'correlation_regime':h.correlation_regime,'paper':{'starting_capital':h.paper_starting_capital,'realized_pnl':h.paper_realized_pnl,'equity':paper_equity,'available_capital':max(0,paper_equity-h.paper_reserved_capital),'reserved_capital':h.paper_reserved_capital,'return_pct':paper_return,'max_drawdown':h.paper_max_drawdown}}
 @app.get('/dashboard')
 def dashboard(_=Depends(require_api_key)):
- h=memory.hot();return {'mode':h.mode,'risk':risk_state(),'pipeline':autonomy.status(),'observations':ingestion_store.status(),'decisions':len(memory.decisions()),'scars':len(memory.scars()),'principles':len(memory.principles()),'metrics':len(memory.snapshots())}
+ h=memory.hot();return {'mode':h.mode,'risk':risk_state(),'pipeline':autonomy.status(),'observations':ingestion_store.status(),'decisions':memory.decision_count(),'scars':len(memory.scars()),'principles':len(memory.principles()),'metrics':len(memory.snapshots())}
 @app.get('/markets')
 def list_markets(limit:int=20,fast_only:bool=False):
  try:
@@ -363,7 +363,7 @@ def pipeline_observations(_=Depends(require_api_key)):return ingestion_store.sta
 def readiness(_=Depends(require_api_key)):return _readiness_payload()
 @app.get('/readiness/summary')
 def readiness_summary(_=Depends(require_api_key)):
- q=ingestion_store.quality();worker=ingestion_store.worker_health();decisions=memory.decisions();exposed=[d for d in decisions if d.size>0 and d.paper_fill_fraction>0];research_exposed=[d for d in exposed if d.research_eligible];exploration_exposed=[d for d in exposed if (d.market_context or {}).get('paper_exploration') is True];exploration_resolved=[d for d in exploration_exposed if d.outcome!='pending'];exploration_pending=[d for d in exploration_exposed if d.outcome=='pending'];exploration_pnl=sum(float(d.pnl) for d in exploration_resolved);resolved=[d for d in research_exposed if d.outcome!='pending'];pending=[d for d in research_exposed if d.outcome=='pending'];key=lambda d:f'{d.strategy_id}:{d.market_id}:{d.regime}:{d.model_version or "none"}';resolved_keys={key(d) for d in resolved};pending_keys={key(d) for d in pending};snapshots=memory.snapshots();resolved_count=len(resolved);wins=sum(1 for d in resolved if d.outcome=='win');pnl=sum(float(d.pnl) for d in resolved);minimum=settings.min_sample;blockers=[]
+ q=ingestion_store.quality();worker=ingestion_store.worker_health();decisions=memory.decisions(1000);exposed=[d for d in decisions if d.size>0 and d.paper_fill_fraction>0];research_exposed=[d for d in exposed if d.research_eligible];exploration_exposed=[d for d in exposed if (d.market_context or {}).get('paper_exploration') is True];exploration_resolved=[d for d in exploration_exposed if d.outcome!='pending'];exploration_pending=[d for d in exploration_exposed if d.outcome=='pending'];exploration_pnl=sum(float(d.pnl) for d in exploration_resolved);resolved=[d for d in research_exposed if d.outcome!='pending'];pending=[d for d in research_exposed if d.outcome=='pending'];key=lambda d:f'{d.strategy_id}:{d.market_id}:{d.regime}:{d.model_version or "none"}';resolved_keys={key(d) for d in resolved};pending_keys={key(d) for d in pending};snapshots=memory.snapshots();resolved_count=len(resolved);wins=sum(1 for d in resolved if d.outcome=='win');pnl=sum(float(d.pnl) for d in resolved);minimum=settings.min_sample;blockers=[]
  if len(resolved_keys)<minimum:blockers.append(f'Need {minimum-len(resolved_keys)} more independent resolved paper outcomes before the live sample gate can pass.')
  if q['score']<settings.min_data_quality or q.get('book_coverage',0)<settings.min_data_quality or q['stale']:blockers.append('Market data must remain fresh, valid, and sufficiently quote-covered.')
  if worker.get('stale'):blockers.append('Ingestion worker heartbeat is stale or missing.')
@@ -623,6 +623,12 @@ def _decide_impl(req:DecisionRequest):
   else:size=min(size,settings.max_order_size)
  fill_profile=paper_execution_profile(req.market,size,e.recommended_side) if h.mode==Mode.PAPER and size>0 else {'fill_fraction':1.0,'execution_price':None,'reason':'non_paper_or_zero_size'}
  fill_fraction=fill_profile['fill_fraction'];paper_execution_price=fill_profile['execution_price']
+ if h.mode==Mode.PAPER and size>0 and fill_fraction>0:
+  paper_price=paper_execution_price if paper_execution_price is not None else e.executable_price
+  paper_exposure=exposure_notional(size*fill_fraction,paper_price,req.market.fee_rate,req.market.slippage_bps)
+  paper_available=h.paper_starting_capital+h.paper_realized_pnl-h.paper_reserved_capital
+  if paper_exposure>max(0.0,paper_available)+1e-9:
+   size=0;fill_fraction=0.0;paper_execution_price=None;fill_profile['reason']='paper_capital_limit';gates.append('paper_capital_gate')
  if h.mode==Mode.PAPER and size>0 and fill_fraction<=0:
   size=0;paper_execution_price=None;fill_profile['reason']='paper_no_fill';gates.append('paper_no_fill')
  if h.mode==Mode.PAPER and size>0 and paper_execution_price is not None and paper_execution_price>=e.side_probability and not req.exploration and not req.paper_research_sample:
@@ -652,6 +658,7 @@ def _decide_impl(req:DecisionRequest):
  effective_exposure=exposure_notional(d.size*d.paper_fill_fraction,paper_execution_price if paper_execution_price is not None else execution_price,req.market.fee_rate,req.market.slippage_bps) if h.mode!=Mode.LIVE else 0.0
  if effective_exposure>0:
   h.portfolio_heat+=effective_exposure;h.open_risk+=effective_exposure
+  if h.mode==Mode.PAPER:h.paper_reserved_capital+=effective_exposure
  telemetry.inc('vesper_decisions_total',labels={'mode':h.mode.value,'action':action,'strategy':req.strategy_id});telemetry.set('vesper_portfolio_heat',h.portfolio_heat)
  memory.save_decision(d,h if effective_exposure>0 else None,episode=episode,eda_events=[observation_event,decision_event]);memory.event('decision',d.model_dump())
  if req.execute and d.size>0:
@@ -692,6 +699,7 @@ def _decide_impl(req:DecisionRequest):
    # reservation immediately so a transient venue/configuration error cannot
    # strand portfolio heat until a later settlement job runs.
    h.portfolio_heat=max(0,h.portfolio_heat-effective_exposure);h.open_risk=max(0,h.open_risk-effective_exposure)
+   if h.mode==Mode.PAPER:h.paper_reserved_capital=max(0,h.paper_reserved_capital-effective_exposure)
    d.outcome='execution_failed';d.status='execution-failed';d.resolved_at=now_iso();d.rationale=f'Execution failed: {exc}'
    memory.save_decision(d,h)
    order=OrderRecord(id='order_'+os.urandom(6).hex(),client_order_id='failed_'+os.urandom(6).hex(),decision_id=d.id,mode=h.mode,market_id=d.market_id,side=d.side or 'UNKNOWN',requested_size=d.size,limit_price=d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price,status=OrderStatus.FAILED,error=str(exc));d.order_id=order.id;memory.save_order(order,d);telemetry.inc('vesper_orders_total',labels={'mode':h.mode.value,'status':order.status.value});telemetry.error('order_execution');memory.event('execution_blocked',order.model_dump());memory.append_eda_event(make_canonical_event('execution','execution_failed',order.model_dump(mode='json'),episode_id=d.episode_id,source_event_id=order.id,quality=EventQuality(confidence=0.0,valid=False)))

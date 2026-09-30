@@ -12,6 +12,7 @@ from .eda import make_canonical_event
 from .observability import telemetry
 from .attribution import evaluate_attribution
 from .experiential_memory import build_postmortem
+from .research_validation import exposure_notional
 
 
 def settle_decision(
@@ -111,9 +112,16 @@ def settle_decision(
             effective_exposure=float(decision.executed_notional or 0)+float(decision.executed_fees or 0)
         else:
             paper_price=decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
-            effective_exposure=decision.size*decision.paper_fill_fraction*paper_price+float((decision.market_context or {}).get('fee_rate',0) or 0)*decision.size*decision.paper_fill_fraction
+            context=decision.market_context or {}
+            effective_exposure=exposure_notional(decision.size*decision.paper_fill_fraction,paper_price,float(context.get('fee_rate',0) or 0),float(context.get('slippage_bps',0) or 0))
         hot.portfolio_heat = max(0, hot.portfolio_heat - effective_exposure)
         hot.open_risk = max(0, hot.open_risk - effective_exposure)
+        if decision.mode.value == 'paper':
+            hot.paper_reserved_capital = max(0, hot.paper_reserved_capital - effective_exposure)
+            hot.paper_realized_pnl += pnl
+            paper_equity = hot.paper_starting_capital + hot.paper_realized_pnl
+            hot.paper_peak_equity = max(hot.paper_peak_equity, paper_equity)
+            hot.paper_max_drawdown = max(hot.paper_max_drawdown, hot.paper_peak_equity - paper_equity)
         trust = hot.trust.get(decision.strategy_id, 0.5)
         hot.trust[decision.strategy_id] = max(0, min(1, trust + (.02 if pnl > 0 else -.05 if pnl < 0 else 0)))
         memory.save_settlement_state(decision,hot,portfolio_connection,eda_events=[settlement_event, attribution_event])

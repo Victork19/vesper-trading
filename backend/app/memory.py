@@ -78,8 +78,17 @@ class TradingMemory:
   with self.db.connection() as c:return [Scar.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'lesson' ORDER BY updated_at DESC").fetchall()]
  def principles(self):
   with self.db.connection() as c:return [Principle.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'statement' ORDER BY updated_at DESC").fetchall()]
- def decisions(self):
-  with self.db.connection() as c:return [DecisionRecord.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='COLD' AND value ? 'action' ORDER BY updated_at DESC").fetchall()]
+ def decisions(self,limit=None):
+  with self.db.connection() as c:
+   if limit is None:
+    rows=c.execute("SELECT value FROM memory WHERE tier='COLD' AND value ? 'action' ORDER BY updated_at DESC").fetchall()
+   else:
+    rows=c.execute("SELECT value FROM memory WHERE tier='COLD' AND value ? 'action' ORDER BY updated_at DESC LIMIT %s",(max(1,min(int(limit),1000)),)).fetchall()
+   return [DecisionRecord.model_validate(r['value']) for r in rows]
+ def decision_count(self):
+  with self.db.connection() as c:
+   row=c.execute("SELECT COUNT(*) AS count FROM memory WHERE tier='COLD' AND value ? 'action'").fetchone()
+   return int(row['count'])
  def save_order(self,order,decision=None):
   allowed={
    'new':{'new','accepted','rejected','failed','unknown','reconciliation_required'},

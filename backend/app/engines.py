@@ -60,7 +60,9 @@ class RiskEngine:
   # cost, then apply the portfolio's remaining collateral capacity.
   benchmark=executable_benchmark(m,e.recommended_side)
   cost=float(benchmark['cost'])
-  bankroll=max(0.0,float(os.getenv('RISK_BANKROLL','1.0')))
+  configured_bankroll=os.getenv('RISK_BANKROLL')
+  paper_bankroll=self.memory.hot().paper_starting_capital if self.memory.hot().mode==Mode.PAPER else 1.0
+  bankroll=max(0.0,float(configured_bankroll if configured_bankroll is not None else paper_bankroll))
   kelly=kelly_contracts(conservative,cost,bankroll,.5,max_contracts=strategy.max_size)
   uncertainty=m.model_uncertainty if m.model_uncertainty is not None else e.uncertainty
   size=kelly*trust*capacity*(1-corr/2)*max(.15,1-uncertainty)
