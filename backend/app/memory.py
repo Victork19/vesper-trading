@@ -27,7 +27,7 @@ class TradingMemory:
     state.paper_realized_pnl=historical_pnl
     state.paper_peak_equity=max(state.paper_starting_capital,state.paper_starting_capital+historical_pnl)
     state.paper_account_version=1
-    c.execute("INSERT INTO memory(tier,key,value,updated_at) VALUES('HOT','state',%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",('HOT','state',self.db.json(state.model_dump()),now_iso()))
+    c.execute("INSERT INTO memory(tier,key,value,updated_at) VALUES(%s,%s,%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",('HOT','state',self.db.json(state.model_dump()),now_iso()))
  def put(self,tier,key,value):
   with self.lock:
    with self.db.connection() as c:c.execute('INSERT INTO memory(tier,key,value,updated_at) VALUES(%s,%s,%s,%s) ON CONFLICT(tier,key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at',(tier,key,self.db.json(value),now_iso()))
