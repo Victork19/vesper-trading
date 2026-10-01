@@ -35,7 +35,8 @@ class TradingMemory:
   with self.db.connection() as c:
    r=c.execute('SELECT value FROM memory WHERE tier=%s AND key=%s',(tier,key)).fetchone();return r['value'] if r else None
  def all(self,tier):
-  with self.db.connection() as c:return [r['value'] for r in c.execute('SELECT value FROM memory WHERE tier=%s ORDER BY updated_at DESC',(tier,)).fetchall()]
+  with self.db.connection() as c:rows=c.execute('SELECT value FROM memory WHERE tier=%s ORDER BY updated_at DESC LIMIT %s',(tier,max(1,min(int(os.getenv('MEMORY_READ_LIMIT','500')),2000)))).fetchall()
+  return [r['value'] for r in rows]
  def hot(self):
   # Calendar rollover is a state transition, not a read-side convenience.
   # Lock the row so two API/worker processes cannot reset a newly accumulated
@@ -92,16 +93,18 @@ class TradingMemory:
    connection.execute("UPDATE capital_reservations SET state='settled',released_at=COALESCE(released_at,NOW()) WHERE reservation_id=%s",(row['reservation_id'],))
   return len(rows)
  def scars(self):
-  with self.db.connection() as c:return [Scar.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'lesson' ORDER BY updated_at DESC").fetchall()]
+  with self.db.connection() as c:rows=c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'lesson' ORDER BY updated_at DESC LIMIT 500").fetchall()
+  return [Scar.model_validate(r['value']) for r in rows]
  def principles(self):
-  with self.db.connection() as c:return [Principle.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'statement' ORDER BY updated_at DESC").fetchall()]
- def decisions(self,limit=None):
+  with self.db.connection() as c:rows=c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'statement' ORDER BY updated_at DESC LIMIT 500").fetchall()
+  return [Principle.model_validate(r['value']) for r in rows]
+ def decisions(self,limit=200):
   with self.db.connection() as c:
    if limit is None:
     rows=c.execute("SELECT value FROM memory WHERE tier='COLD' AND value ? 'action' ORDER BY updated_at DESC").fetchall()
    else:
     rows=c.execute("SELECT value FROM memory WHERE tier='COLD' AND value ? 'action' ORDER BY updated_at DESC LIMIT %s",(max(1,min(int(limit),1000)),)).fetchall()
-   return [DecisionRecord.model_validate(r['value']) for r in rows]
+  return [DecisionRecord.model_validate(r['value']) for r in rows]
  def decision_count(self):
   with self.db.connection() as c:
    row=c.execute("SELECT COUNT(*) AS count FROM memory WHERE tier='COLD' AND value ? 'action'").fetchone()
@@ -142,9 +145,12 @@ class TradingMemory:
   with self.db.connection() as c:
    return self._order(c.execute("SELECT o.*,COALESCE(d.value->>'outcome','pending') AS outcome,COALESCE((d.value->>'pnl')::double precision,0) AS pnl FROM orders o LEFT JOIN memory d ON d.tier='COLD' AND d.key=o.decision_id WHERE o.id=%s",(order_id,)).fetchone())
  def orders(self):
-  with self.db.connection() as c:return [self._order(r) for r in c.execute("SELECT o.*,COALESCE(d.value->>'outcome','pending') AS outcome,COALESCE((d.value->>'pnl')::double precision,0) AS pnl FROM orders o LEFT JOIN memory d ON d.tier='COLD' AND d.key=o.decision_id ORDER BY o.created_at DESC").fetchall()]
+  with self.db.connection() as c:
+   rows=c.execute("SELECT o.*,COALESCE(d.value->>'outcome','pending') AS outcome,COALESCE((d.value->>'pnl')::double precision,0) AS pnl FROM orders o LEFT JOIN memory d ON d.tier='COLD' AND d.key=o.decision_id ORDER BY o.created_at DESC").fetchall()
+  return [self._order(r) for r in rows]
  def snapshots(self):
-  with self.db.connection() as c:return [ProcessSnapshot.model_validate(r['value']) for r in c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'expectancy' ORDER BY updated_at DESC").fetchall()]
+  with self.db.connection() as c:rows=c.execute("SELECT value FROM memory WHERE tier='WARM' AND value ? 'expectancy' ORDER BY updated_at DESC LIMIT 500").fetchall()
+  return [ProcessSnapshot.model_validate(r['value']) for r in rows]
  def active_scars(self,strategy_id='unknown',market_type='unknown',market_id='unknown',regime='unknown'):
   now=datetime.now(timezone.utc);result=[]
   for scar in self.scars():
@@ -201,17 +207,18 @@ class TradingMemory:
    else:
     rows=c.execute('SELECT * FROM eda_events ORDER BY event_time DESC LIMIT %s',(max(1,min(int(limit),1000)),)).fetchall()
   return [dict(row) for row in rows]
- def eda_integrity(self):
+ def eda_integrity(self,validation_limit=100):
   invalid_hashes=[]
   with self.db.connection() as c:
-   episodes=c.execute('SELECT episode_id,episode,episode_hash FROM eda_episodes').fetchall()
+   episode_count=int(c.execute('SELECT COUNT(*) AS count FROM eda_episodes').fetchone()['count'])
+   episodes=c.execute('SELECT episode_id,episode,episode_hash FROM eda_episodes ORDER BY created_at DESC LIMIT %s',(max(1,min(int(validation_limit),500)),)).fetchall()
    orphan_events=int(c.execute('SELECT COUNT(*) AS count FROM eda_events e LEFT JOIN eda_episodes p ON p.episode_id=e.episode_id WHERE e.episode_id IS NOT NULL AND p.episode_id IS NULL').fetchone()['count'])
    event_count=int(c.execute('SELECT COUNT(*) AS count FROM eda_events').fetchone()['count'])
   for row in episodes:
    try:
     if episode_hash(DecisionEpisode.model_validate(row['episode'])) != row['episode_hash']: invalid_hashes.append(row['episode_id'])
    except Exception: invalid_hashes.append(row['episode_id'])
-  return {'episodes':len(episodes),'events':event_count,'orphan_events':orphan_events,'invalid_episode_hashes':invalid_hashes,'healthy':not invalid_hashes and orphan_events==0}
+  return {'episodes':episode_count,'events':event_count,'orphan_events':orphan_events,'invalid_episode_hashes':invalid_hashes,'validated_episodes':len(episodes),'validation_sampled':episode_count>len(episodes),'healthy':not invalid_hashes and orphan_events==0}
  def cleanup_retention(self):
   raw_days=max(1,int(os.getenv('RETENTION_RAW_MARKET_DAYS','30')));event_days=max(raw_days,int(os.getenv('RETENTION_MARKET_EVENT_DAYS',str(raw_days))));metric_days=max(1,int(os.getenv('RETENTION_METRIC_SAMPLE_DAYS','7')));journal_days=max(30,int(os.getenv('RETENTION_JOURNAL_DAYS','365')))
   with self.db.connection() as c:
@@ -228,20 +235,23 @@ class TradingMemory:
       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(opportunity_id) DO UPDATE SET status=EXCLUDED.status,reason=EXCLUDED.reason,episode_id=EXCLUDED.episode_id,payload=EXCLUDED.payload''',
       (opportunity.opportunity_id,opportunity.market_id,opportunity.strategy_id,opportunity.observed_at,opportunity.status,opportunity.reason,opportunity.snapshot_hash,opportunity.episode_id,self.db.json(opportunity.payload),opportunity.schema_version))
  def opportunities(self,limit=200):
-  with self.db.connection() as c:return [dict(row) for row in c.execute('SELECT * FROM eda_opportunities ORDER BY observed_at DESC LIMIT %s',(max(1,min(int(limit),1000)),)).fetchall()]
+  with self.db.connection() as c:rows=c.execute('SELECT * FROM eda_opportunities ORDER BY observed_at DESC LIMIT %s',(max(1,min(int(limit),1000)),)).fetchall()
+  return [dict(row) for row in rows]
  def save_replay(self,replay):
   with self.db.connection() as c:c.execute('INSERT INTO eda_replay_runs(replay_id,episode_id,mode,as_of,result) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(replay_id) DO UPDATE SET result=EXCLUDED.result',(replay.replay_id,replay.episode_id,replay.mode,replay.as_of,self.db.json(replay.result)))
  def replay_runs(self,episode_id=None,limit=100):
   with self.db.connection() as c:
    query='SELECT * FROM eda_replay_runs WHERE episode_id=%s ORDER BY created_at DESC LIMIT %s' if episode_id else 'SELECT * FROM eda_replay_runs ORDER BY created_at DESC LIMIT %s'
    params=(episode_id,max(1,min(int(limit),1000))) if episode_id else (max(1,min(int(limit),1000)),)
-   return [dict(row) for row in c.execute(query,params).fetchall()]
+   rows=c.execute(query,params).fetchall()
+  return [dict(row) for row in rows]
  def save_model_registry(self,record):
   with self.db.connection() as c:
    if record.status=='active': c.execute("UPDATE eda_model_registry SET status='candidate',record=jsonb_set(record,'{status}','\"candidate\"'::jsonb) WHERE model_id=%s AND version<>%s",(record.model_id,record.version))
    c.execute('INSERT INTO eda_model_registry(model_id,version,status,record) VALUES(%s,%s,%s,%s) ON CONFLICT(model_id,version) DO UPDATE SET status=EXCLUDED.status,record=EXCLUDED.record',(record.model_id,record.version,record.status,self.db.json(record.model_dump(mode='json'))))
  def model_registry(self,limit=200):
-  with self.db.connection() as c:return [dict(row['record']) for row in c.execute('SELECT record FROM eda_model_registry ORDER BY created_at DESC LIMIT %s',(max(1,min(int(limit),1000)),)).fetchall()]
+  with self.db.connection() as c:rows=c.execute('SELECT record FROM eda_model_registry ORDER BY created_at DESC LIMIT %s',(max(1,min(int(limit),1000)),)).fetchall()
+  return [dict(row['record']) for row in rows]
  @contextmanager
  def decision_lock(self,decision_id):
   """Serialize settlement attempts for one decision across API workers."""
@@ -255,7 +265,8 @@ class TradingMemory:
    c.execute("SELECT pg_advisory_xact_lock(hashtextextended('vesper:portfolio',0))")
    yield c
  def events(self,limit=200):
-  with self.db.connection() as c:return [dict(r) for r in c.execute('SELECT seq,event_id,created_at,event,payload FROM journal ORDER BY seq DESC LIMIT %s',(limit,)).fetchall()]
+  with self.db.connection() as c:rows=c.execute('SELECT seq,event_id,created_at,event,payload FROM journal ORDER BY seq DESC LIMIT %s',(max(1,min(int(limit),1000)),)).fetchall()
+  return [dict(r) for r in rows]
  def audit(self,limit=200):return [x for x in self.events(limit) if x['event'] in ('decision','outcome_recorded','scar_created','mode_changed','operator_approval','execution','execution_blocked','kill_switch','data_quality','learning_memory_deleted')]
  def delete_learning_memory(self):
   with self.lock:
