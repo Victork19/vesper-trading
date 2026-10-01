@@ -105,6 +105,21 @@ class TradingMemory:
    else:
     rows=c.execute("SELECT value FROM memory WHERE tier='COLD' AND value ? 'action' ORDER BY updated_at DESC LIMIT %s",(max(1,min(int(limit),1000)),)).fetchall()
   return [DecisionRecord.model_validate(r['value']) for r in rows]
+ def decisions_for_feed(self,limit=200):
+  """Load the bounded decision feed without replay-only EDA payloads."""
+  transient_context_keys=['retrieved_memories','attention_plan','information_requests','action_evaluations','policy_proposal']
+  with self.db.connection() as c:
+   rows=c.execute("""
+    SELECT (value - 'market_context') || jsonb_build_object(
+      'market_context',
+      COALESCE(value->'market_context','{}'::jsonb) - %s::text[]
+    ) AS value
+    FROM memory
+    WHERE tier='COLD' AND value ? 'action'
+    ORDER BY updated_at DESC
+    LIMIT %s
+   """,(transient_context_keys,max(1,min(int(limit),200)))).fetchall()
+  return [DecisionRecord.model_validate(r['value']) for r in rows]
  def decision_count(self):
   with self.db.connection() as c:
    row=c.execute("SELECT COUNT(*) AS count FROM memory WHERE tier='COLD' AND value ? 'action'").fetchone()

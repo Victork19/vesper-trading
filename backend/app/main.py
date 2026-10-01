@@ -207,18 +207,7 @@ def memory_digest(strategy_id:str='reference_class',market_type:str='unknown',ma
  return memory.memory_digest(strategy_id,market_type,market_id,regime)
 @app.get('/decisions')
 def list_decisions(limit:int=200,_=Depends(require_api_key)):
- payload=[]
- for item in memory.decisions(max(1,min(limit,200))):
-  value=item.model_dump(mode='json')
-  # These EDA artifacts are persisted for replay/audit, but are not used by
-  # the decision feed. Removing them from this high-frequency response keeps
-  # dashboard refreshes bounded without changing durable decision records.
-  context=dict(value.get('market_context') or {})
-  for key in ('retrieved_memories','attention_plan','information_requests','action_evaluations','policy_proposal'):
-   context.pop(key,None)
-  value['market_context']=context
-  payload.append(value)
- return jsonable_encoder(payload)
+ return jsonable_encoder([item.model_dump(mode='json') for item in memory.decisions_for_feed(max(1,min(limit,200)))])
 @app.get('/metrics',response_model=list[ProcessSnapshot])
 def metrics(_=Depends(require_api_key)):
  decisions=memory.decisions(200);result=[]
