@@ -19,16 +19,19 @@ class PortfolioRisk:
   if price is None: price=getattr(d,'price',0)
   return exposure_notional(quantity,price,float(context.get('fee_rate',0) or 0),float(context.get('slippage_bps',0) or 0))
  def gate(self,m,requested_size,flow_imbalance=0,large_wallet_signal=0,side='YES'):
-  reasons=[];multiplier=1.0
-  if self.memory.hot().daily_pnl<=-0.1:reasons.append('daily_kill_switch')
-  if self.memory.hot().weekly_pnl<=-0.2:reasons.append('weekly_kill_switch')
+  reasons=[];multiplier=1.0;hot=self.memory.hot();paper_mode=getattr(hot.mode,'value',hot.mode)=='paper'
+  if paper_mode:
+   starting=max(.01,float(getattr(hot,'paper_starting_capital',10) or 10));daily_limit=starting*max(.01,float(os.getenv('PAPER_MAX_DAILY_LOSS_PCT','.10')));weekly_limit=starting*max(.01,float(os.getenv('PAPER_MAX_WEEKLY_LOSS_PCT','.25')))
+  else:
+   daily_limit=max(.01,float(os.getenv('MAX_DAILY_LOSS_ABS','.1')));weekly_limit=max(.01,float(os.getenv('MAX_WEEKLY_LOSS_ABS','.2')))
+  if hot.daily_pnl<=-daily_limit:reasons.append('daily_kill_switch')
+  if hot.weekly_pnl<=-weekly_limit:reasons.append('weekly_kill_switch')
   if abs(flow_imbalance)>.7 or large_wallet_signal>.8:reasons.append('toxic_flow');multiplier*=.25
   if m.resolution_hours>720:reasons.append('long_horizon_discount');multiplier*=.5
   open_positions=[d for d in self.memory.decisions() if d.outcome=='pending' and (getattr(d,'size',0)>0 or getattr(d,'executed_size',0)>0)]
   market_exposure=sum(self._exposure(d) for d in open_positions if d.market_id==m.market_id)
   bucket_exposure=sum(self._exposure(d) for d in open_positions if d.market_type==m.market_type and d.regime==m.regime)
   cluster=correlation_cluster(m);cluster_exposure=sum(self._exposure(d) for d in open_positions if (d.market_context or {}).get('correlation_cluster')==cluster)
-  paper_mode=getattr(self.memory.hot().mode,'value',self.memory.hot().mode)=='paper'
   market_cap=max(.01,float(os.getenv('PAPER_MAX_MARKET_EXPOSURE','1.0') if paper_mode else os.getenv('MAX_MARKET_EXPOSURE','.05')));bucket_cap=max(market_cap,float(os.getenv('PAPER_MAX_BUCKET_EXPOSURE','2.0') if paper_mode else os.getenv('MAX_BUCKET_EXPOSURE','.10')));cluster_cap=max(bucket_cap,float(os.getenv('PAPER_MAX_CORRELATED_EXPOSURE','3.0') if paper_mode else os.getenv('MAX_CORRELATED_EXPOSURE','.12')))
   benchmark=executable_benchmark(m,side)
   unit_cost=max(1e-9,float(benchmark['cost']))
