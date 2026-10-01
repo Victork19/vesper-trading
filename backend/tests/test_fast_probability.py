@@ -82,6 +82,19 @@ def test_paper_execution_walks_depth_and_returns_vwap_price():
  assert profile['fill_fraction']==.85 and abs(profile['average_quote_price']-(.004+.0025)/.015)<1e-9
  assert profile['execution_price']>profile['average_quote_price']
 
+def test_paper_fee_is_not_embedded_and_charged_twice():
+ from app.adapters import PaperExecution
+ class Market:
+  book_asks=[BookLevel(price=.4,size=.02)]
+  quality_score=1.0
+  fee_rate=.02
+  slippage_bps=0.0
+ profile=paper_execution_profile(Market(),.01)
+ assert profile['execution_price']<.42
+ decision=DecisionRecord(id='fee-once',mode=Mode.PAPER,market_id='m',strategy_id='s',action='BUY',side='YES',size=.01,price=.4,fair_probability=.7,confidence=.8,risk_score=5,edge=.2,rationale='test',paper_fill_fraction=1,paper_execution_price=profile['execution_price'],market_context={'fee_rate':.02})
+ result=PaperExecution().execute(decision)
+ assert abs(result['filled_fees']-.02*.01*(1-profile['execution_price']))<1e-9
+
 def test_paper_execution_marks_partial_depth_as_partial_fill():
  from app.adapters import PaperExecution
  decision=DecisionRecord(id='partial',mode=Mode.PAPER,market_id='m',strategy_id='s',action='BUY',side='YES',size=.02,price=.4,fair_probability=.7,confidence=.8,risk_score=5,edge=.2,rationale='test',paper_fill_fraction=.5,paper_execution_price=.41)

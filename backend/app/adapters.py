@@ -24,7 +24,9 @@ def paper_execution_profile(market,size,side=None):
  queue_factor=max(.05,min(1.0,float(os.getenv('PAPER_QUEUE_FILL_FACTOR','.85'))));quality_multiplier*=queue_factor
  latency_slippage=max(0.0,float(os.getenv('PAPER_LATENCY_SLIPPAGE_BPS','5')))
  filled*=quality_multiplier
- execution=min(1.0,average+(float(getattr(market,'slippage_bps',0))+latency_slippage)/10000+float(getattr(market,'fee_rate',0))*(1-average))
+ # Keep fees separate from the fill price. Settlement records explicit
+ # execution fees, so adding the fee here would charge paper trades twice.
+ execution=min(1.0,average+(float(getattr(market,'slippage_bps',0))+latency_slippage)/10000)
  return {'fill_fraction':max(0.0,min(1.0,filled/size)),'filled_size':filled,'average_quote_price':average,'execution_price':execution,'reason':'depth_walk_vwap_queue_adjusted' if quality_multiplier<1 else 'depth_walk_vwap'}
 
 def paper_fill_profile(market,size,side=None):
@@ -49,7 +51,8 @@ class PaperExecution(ExecutionAdapter):
   status=OrderStatus.REJECTED if filled<=0 else OrderStatus.PARTIALLY_FILLED if filled+1e-12<decision.size else OrderStatus.FILLED
   execution_price=decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price
   fee_rate=float((decision.market_context or {}).get('fee_rate',0) or 0)
-  return {'status':status.value,'capital_at_risk':filled*execution_price+filled*fee_rate,'decision_id':decision.id,'client_order_id':'paper_'+uuid.uuid4().hex,'filled_size':filled,'filled_notional':filled*execution_price,'filled_fees':filled*fee_rate,'average_fill_price':execution_price}
+  fees=filled*fee_rate*max(0.0,1.0-execution_price)
+  return {'status':status.value,'capital_at_risk':filled*execution_price+fees,'decision_id':decision.id,'client_order_id':'paper_'+uuid.uuid4().hex,'filled_size':filled,'filled_notional':filled*execution_price,'filled_fees':fees,'average_fill_price':execution_price}
 class ShadowExecution(ExecutionAdapter):
  def execute(self,decision):return {'status':OrderStatus.ACCEPTED.value,'capital_at_risk':0,'decision_id':decision.id,'client_order_id':'shadow_'+uuid.uuid4().hex,'filled_size':0,'average_fill_price':None}
 class LiveExecution(ExecutionAdapter):
