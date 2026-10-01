@@ -7,6 +7,7 @@ from .fast_probability import FastMarketProbability,market_asset
 from .market_policy import fast_markets_only,fast_max_resolution_hours,fast_market_allowed
 from .observability import telemetry
 from .ensemble import hybrid_forecast
+from .research_validation import market_cohort_key
 logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'));log=logging.getLogger('vesper.pipeline')
 def _number(value,default=None):
  try:return float(value) if value not in (None,'') else default
@@ -22,9 +23,10 @@ def _fast_max_hours():
  return fast_max_resolution_hours()
 
 def _generic_market_baseline(memory,market_input):
- cutoff=market_input.observed_at or datetime.now(timezone.utc);outcomes=[]
+ cutoff=market_input.observed_at or datetime.now(timezone.utc);outcomes=[];cohort=market_cohort_key(market_input.question,market_input.market_type,market_input.resolution_hours)
  for d in memory.decisions():
-  if d.market_type!=market_input.market_type or d.resolved_yes is None or d.outcome in ('pending','void') or not d.research_eligible:continue
+  context=d.market_context or {};historical_question=context.get('canonical_question')
+  if not historical_question or market_cohort_key(historical_question,d.market_type,context.get('resolution_hours'))!=cohort or d.resolved_yes is None or d.outcome in ('pending','void') or not d.research_eligible:continue
   try:
    created=datetime.fromisoformat(str(d.created_at).replace('Z','+00:00'));resolved=datetime.fromisoformat(str(d.resolved_at).replace('Z','+00:00')) if d.resolved_at else None
    if resolved is None or created>=cutoff or resolved>cutoff:continue

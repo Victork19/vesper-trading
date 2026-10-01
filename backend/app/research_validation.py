@@ -43,6 +43,33 @@ def _slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
 
 
+def market_cohort_key(question: Any, market_type: Any = "unknown", resolution_hours: Any = None) -> str:
+    """Group only comparable binary markets for reference-rate learning."""
+    text = str(question or "").lower()
+    asset_aliases = {
+        "bitcoin": ("bitcoin", "btc"),
+        "ethereum": ("ethereum", "eth"),
+        "solana": ("solana", "sol"),
+        "xrp": ("xrp",),
+        "dogecoin": ("dogecoin", "doge"),
+    }
+    asset = next((canonical for canonical, aliases in asset_aliases.items() if any(re.search(rf"\b{re.escape(alias)}\b", text) for alias in aliases)), "generic")
+    if any(token in text for token in ("up or down", "higher or lower", "above", "below", "increase", "decrease")):
+        template = "direction"
+    elif any(token in text for token in ("win", "winner", "match", "game", "vs.", " vs ")):
+        template = "winner"
+    elif any(token in text for token in ("over", "under", "more than", "less than", "total")):
+        template = "threshold"
+    else:
+        template = "generic"
+    try:
+        hours = float(resolution_hours)
+    except (TypeError, ValueError):
+        hours = 168.0
+    horizon = "fast" if hours <= .25 else "intraday" if hours <= 24 else "daily"
+    return f"{_slug(market_type) or 'unknown'}:{asset}:{template}:{horizon}"
+
+
 def canonical_dependency_metadata(
     question: str,
     market_type: str = "unknown",

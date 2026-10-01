@@ -5,6 +5,7 @@ import pytest
 from app.engines import collateral_cost, kelly_contracts
 from app.research_validation import (
     canonical_dependency_metadata,
+    market_cohort_key,
     executable_benchmark,
     is_research_eligible,
     population_drift,
@@ -79,6 +80,11 @@ def test_dependency_metadata_retains_numeric_resolution_identity():
     second = canonical_dependency_metadata("Will BTC be above 61000?", "crypto", resolution_start="2026-08-20T00:00:00Z", resolution_end="2026-08-20T01:00:00Z")
     assert first["event_family"] != second["event_family"]
     assert first["horizon_minutes"] == 60
+
+
+def test_market_cohorts_do_not_mix_unrelated_questions():
+    assert market_cohort_key("Bitcoin Up or Down?", "crypto", .1) == market_cohort_key("BTC Up or Down?", "crypto", .2)
+    assert market_cohort_key("Bitcoin Up or Down?", "crypto", .1) != market_cohort_key("Will Team A win?", "sports", .1)
 
 
 def test_walk_forward_splits_embargo_and_dependency_overlap():

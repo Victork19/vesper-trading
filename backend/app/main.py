@@ -27,7 +27,7 @@ from .settlement import settle_decision
 from .runtime_config import RuntimeConfig
 from .market_policy import fast_market_allowed,fast_markets_only,fast_max_resolution_hours
 from .live_execution import LiveExecutionService, VenueError
-from .research_validation import exposure_notional, research_exposure, canonical_dependency_metadata
+from .research_validation import exposure_notional, research_exposure, canonical_dependency_metadata, market_cohort_key
 from .eda import (
     DATA_VERSION,
     OBJECTIVE_POLICY_VERSION,
@@ -584,7 +584,8 @@ def _decide_impl(req:DecisionRequest):
  if not strategy.enabled:raise HTTPException(403,f'Strategy disabled: {req.strategy_id}')
  if req.exploration and (h.mode!=Mode.PAPER or req.strategy_id!='paper_exploration'):raise HTTPException(422,'Exploration is only available through the paper_exploration strategy in paper mode.')
  if req.paper_research_sample and (h.mode!=Mode.PAPER or req.exploration):raise HTTPException(422,'Paper research sampling is only available for non-exploration paper decisions.')
- history=[1 if d.resolved_yes else 0 for d in memory.decisions() if d.market_type==req.market.market_type and d.resolved_yes is not None]
+ cohort=market_cohort_key(req.market.question,req.market.market_type,req.market.resolution_hours)
+ history=[1 if d.resolved_yes else 0 for d in memory.decisions() if d.resolved_yes is not None and market_cohort_key((d.market_context or {}).get('canonical_question'),d.market_type,(d.market_context or {}).get('resolution_hours'))==cohort]
  if req.strategy_id=='relative_microstructure':
   experimental=experimental_estimate(req.market)
   if experimental is None:raise HTTPException(422,'Experimental strategy requires calibrated model evidence and both contract books.')
