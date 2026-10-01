@@ -11,7 +11,8 @@ class MetricsEngine:
   quantity=float(d.executed_size or 0) if d.execution_reconciled else float(d.size or 0)*float(d.paper_fill_fraction or 0)
   price=float(d.executed_average_price if d.execution_reconciled and d.executed_average_price is not None else d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price)
   notional=float(d.executed_notional or 0) if d.executed_notional else quantity*price
-  fees=float(d.executed_fees or 0) if d.executed_fees else quantity*float((d.market_context or {}).get('fee_rate',0) or 0)
+  fee_rate=float((d.market_context or {}).get('fee_rate',0) or 0)
+  fees=float(d.executed_fees or 0) if d.execution_reconciled else quantity*fee_rate*max(0.0,1.0-price)
   existing.capital_deployed+=notional+fees;existing.fees+=fees;existing.average_trade_pnl=existing.pnl/max(1,existing.decisions);existing.return_on_capital=existing.pnl/existing.capital_deployed if existing.capital_deployed else 0
   if resolved_yes is not None:
    predicted=max(.000001,min(.999999,d.fair_probability));actual=1.0 if resolved_yes else 0.0;existing.brier_score=((existing.brier_score or 0)*prior+(predicted-actual)**2)/existing.decisions;existing.log_loss=((existing.log_loss or 0)*prior-(actual*math.log(predicted)+(1-actual)*math.log(1-predicted)))/existing.decisions;existing.calibration_error=((existing.calibration_error or 0)*prior+abs(predicted-actual))/existing.decisions

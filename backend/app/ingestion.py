@@ -29,10 +29,20 @@ class IngestionStore:
   return (max(stamps)-min(stamps)).total_seconds() if len(stamps)>1 else 0.0
  @contextmanager
  def pipeline_lease(self):
-  """Acquire a database-backed lease so only one worker runs a tick."""
+  """Acquire a lease without holding an idle transaction during network I/O."""
   with self.db.connection() as c:
-   acquired=c.execute("SELECT pg_try_advisory_xact_lock(hashtextextended('vesper:pipeline_tick',0)) AS acquired").fetchone()['acquired']
-   yield bool(acquired)
+   acquired=bool(c.execute("SELECT pg_try_advisory_lock(hashtextextended('vesper:pipeline_tick',0)) AS acquired").fetchone()['acquired'])
+   # The worker performs slow external HTTP requests while the lease is held.
+   # Commit immediately so idle_in_transaction_session_timeout cannot kill the
+   # connection halfway through a tick. The session-level lock survives this
+   # commit and is released explicitly in the finally block.
+   c.commit()
+   try:
+    yield acquired
+   finally:
+    if acquired:
+     c.execute("SELECT pg_advisory_unlock(hashtextextended('vesper:pipeline_tick',0))")
+     c.commit()
  def save(self,market):
   with self.lock:
    market_id=str(market.get('id') or market.get('conditionId') or '')

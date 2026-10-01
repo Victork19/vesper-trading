@@ -29,11 +29,11 @@ def evaluate_attribution(
     best_alternative = max((item.expected_utility for item in alternatives), default=0.0)
     selected_utility = selected.expected_utility if selected else 0.0
     policy_error = _clamp(max(0.0, best_alternative - selected_utility) / (abs(best_alternative) + 1e-9)) if alternatives else 0.0
-    expected_price = decision.executable_price or decision.price
-    actual_price = decision.executed_average_price or decision.paper_execution_price
+    expected_price = decision.executable_price if decision.executable_price is not None else decision.price
+    actual_price = decision.executed_average_price if decision.executed_average_price is not None else decision.paper_execution_price
     execution_error = _clamp(abs(float(actual_price) - float(expected_price))) if actual_price is not None and decision.executed_size > 0 else 0.0
     expected_size = max(0.0, float(decision.size))
-    actual_size = float(decision.executed_size or expected_size * decision.paper_fill_fraction)
+    actual_size = float(decision.executed_size) if decision.execution_reconciled else expected_size * decision.paper_fill_fraction
     realized_unit_pnl = float(decision.pnl) / actual_size if actual_size > 0 else float(decision.pnl)
     return {
         "status": "observational",

@@ -207,7 +207,18 @@ def memory_digest(strategy_id:str='reference_class',market_type:str='unknown',ma
  return memory.memory_digest(strategy_id,market_type,market_id,regime)
 @app.get('/decisions')
 def list_decisions(limit:int=200,_=Depends(require_api_key)):
- return jsonable_encoder([item.model_dump(mode='json') for item in memory.decisions(max(1,min(limit,200)))])
+ payload=[]
+ for item in memory.decisions(max(1,min(limit,200))):
+  value=item.model_dump(mode='json')
+  # These EDA artifacts are persisted for replay/audit, but are not used by
+  # the decision feed. Removing them from this high-frequency response keeps
+  # dashboard refreshes bounded without changing durable decision records.
+  context=dict(value.get('market_context') or {})
+  for key in ('retrieved_memories','attention_plan','information_requests','action_evaluations','policy_proposal'):
+   context.pop(key,None)
+  value['market_context']=context
+  payload.append(value)
+ return jsonable_encoder(payload)
 @app.get('/metrics',response_model=list[ProcessSnapshot])
 def metrics(_=Depends(require_api_key)):
  decisions=memory.decisions(200);result=[]
@@ -218,7 +229,8 @@ def metrics(_=Depends(require_api_key)):
    quantity=float(d.executed_size or 0) if d.execution_reconciled else float(d.size or 0)*float(d.paper_fill_fraction or 0)
    price=float(d.executed_average_price if d.execution_reconciled and d.executed_average_price is not None else d.paper_execution_price if d.paper_execution_price is not None else d.executable_price if d.executable_price is not None else d.price)
    notional=float(d.executed_notional or 0) if d.executed_notional else quantity*price
-   fee=float(d.executed_fees or 0) if d.executed_fees else quantity*float((d.market_context or {}).get('fee_rate',0) or 0)
+   fee_rate=float((d.market_context or {}).get('fee_rate',0) or 0)
+   fee=float(d.executed_fees or 0) if d.execution_reconciled else quantity*fee_rate*max(0.0,1.0-price)
    deployed+=notional+fee;fees+=fee
   result.append(snapshot.model_copy(update={'capital_deployed':deployed,'fees':fees,'average_trade_pnl':snapshot.pnl/max(1,snapshot.decisions),'return_on_capital':snapshot.pnl/deployed if deployed else 0}))
  return result
@@ -252,7 +264,8 @@ def information_request_outcome(request_id:str,payload:dict,principal=Depends(re
  memory.append_eda_event(event);memory.event('eda_information_request_outcome',{'request_id':request_id,'status':status,'actor':principal.key_id});telemetry.inc('vesper_information_request_outcomes_total',labels={'status':status});return event
 @app.get('/eda/health')
 def eda_health(_=Depends(require_api_key)):
- return {'integrity':memory.eda_integrity(),'opportunities':len(memory.opportunities()),'replay_runs':len(memory.replay_runs()),'models':len(memory.model_registry()),'telemetry':telemetry.snapshot()}
+ validation_limit=max(10,min(50,int(os.getenv('EDA_HEALTH_VALIDATION_LIMIT','25'))))
+ return {'integrity':memory.eda_integrity(validation_limit=validation_limit),'opportunities':len(memory.opportunities()),'replay_runs':len(memory.replay_runs()),'models':len(memory.model_registry()),'telemetry':telemetry.snapshot()}
 @app.post('/operator/retention/cleanup')
 def retention_cleanup(principal=Depends(require_admin)):
   result=memory.cleanup_retention();memory.event('retention_cleanup',{'actor':principal.key_id,'result':result});return result

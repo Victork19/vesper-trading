@@ -33,6 +33,11 @@ def test_binary_token_pair_requires_explicit_yes_and_no_labels():
 def test_binary_token_pair_accepts_up_down_markets():
  assert binary_token_pair({'outcomes':['Up','Down'],'clobTokenIds':['up-token','down-token']})==('up-token','down-token')
 
+def test_market_input_aligns_price_with_explicit_yes_label():
+ item={'id':'reversed-outcomes','question':'Will Bitcoin go up?','outcomes':['No','Yes'],'clobTokenIds':['no-token','yes-token'],'outcomePrices':['.4','.6'],'active':True,'liquidity':10000,'volume24hr':10000}
+ market=PolymarketData().to_input(item)
+ assert market.price==.6
+
 def test_buyable_ask_only_book_is_executable():
  item={'id':'ask-only','question':'Will Bitcoin go up?','outcomes':['Yes','No'],'clobTokenIds':['yes-token','no-token'],'outcomePrices':['.6','.4'],'active':True,'liquidity':10000,'volume24hr':10000}
  observed=datetime.now(timezone.utc).isoformat().replace('+00:00','Z')

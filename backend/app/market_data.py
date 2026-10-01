@@ -28,6 +28,25 @@ def binary_token_pair(item):
  if yes is None or no is None or yes==no:return None,None
  return yes,no
 
+def yes_outcome_price(item, default=None):
+ outcomes=item.get('outcomes',[])
+ prices=item.get('outcomePrices',[])
+ if isinstance(outcomes,str):
+  try: outcomes=json.loads(outcomes)
+  except json.JSONDecodeError: outcomes=[]
+ if isinstance(prices,str):
+  try: prices=json.loads(prices)
+  except json.JSONDecodeError: prices=[]
+ if isinstance(outcomes,list) and isinstance(prices,list) and len(outcomes)==len(prices):
+  for label,value in zip(outcomes,prices):
+   if str(label).strip().lower() in ('yes','true','up'):
+    try:return float(value)
+    except (TypeError,ValueError):return default
+ if isinstance(prices,list) and prices:
+  try:return float(prices[0])
+  except (TypeError,ValueError):return default
+ return default
+
 class PolymarketData:
  def __init__(self):
   self.client=httpx.Client(timeout=httpx.Timeout(10.0,connect=3.0),headers={'User-Agent':'vesper-trading/7.0'})
@@ -107,11 +126,7 @@ class PolymarketData:
    telemetry.inc('vesper_markets_missing_outcome_labels')
   return yes,no
  def to_input(self,item,book=None,yes_book=None,no_book=None):
-  item=self.validate_market(item);yes_book=yes_book or book;yes_token,no_token=self.token_pair(item);prices=item.get('outcomePrices',[.5])
-  if isinstance(prices,str):
-   try:prices=json.loads(prices)
-   except json.JSONDecodeError:prices=[.5]
-  price=max(0,min(1,self._number(prices[0] if isinstance(prices,list) and prices else item.get('lastTradePrice',.5),.5)));yes_bid=yes_ask=no_bid=no_ask=None
+  item=self.validate_market(item);yes_book=yes_book or book;yes_token,no_token=self.token_pair(item);price=max(0,min(1,self._number(yes_outcome_price(item),self._number(item.get('lastTradePrice',.5),.5))));yes_bid=yes_ask=no_bid=no_ask=None
   if yes_book is not None:
    yes_bid,yes_ask=yes_book.best_bid,yes_book.best_ask
    if yes_bid is not None:no_ask=max(0,min(1,1-yes_bid))

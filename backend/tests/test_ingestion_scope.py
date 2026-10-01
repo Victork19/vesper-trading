@@ -1,4 +1,5 @@
 from app.ingestion import IngestionRunner, IngestionStore
+from contextlib import contextmanager
 
 
 class FakeMarketData:
@@ -49,3 +50,29 @@ def test_ingestion_accepts_ask_only_books_for_buy_execution():
  store=object.__new__(IngestionStore);store.require_books=True;store.require_both_books=True
  market={'question':'Will Bitcoin go up?','outcomePrices':['.6','.4'],'active':True,'closed':False,'outcomes':['Yes','No'],'clobTokenIds':['yes','no'],'_vesper_book':{'best_ask':.6,'observed_at':'2026-08-21T00:00:00Z'},'_vesper_no_book':{'best_ask':.4,'observed_at':'2026-08-21T00:00:00Z'}}
  assert store.validation_reason(market) is None
+
+
+def test_pipeline_lease_commits_before_and_after_long_tick():
+ class FakeConnection:
+  def __init__(self):
+   self.commits=0
+   self.queries=[]
+  def execute(self,query,params=None):
+   self.queries.append(query)
+   class Result:
+    def fetchone(self):
+     return {'acquired':True}
+   return Result()
+  def commit(self):
+   self.commits+=1
+ class FakeDatabase:
+  def __init__(self,connection): self.connection_value=connection
+  @contextmanager
+  def connection(self): yield self.connection_value
+ connection=FakeConnection();store=object.__new__(IngestionStore);store.db=FakeDatabase(connection)
+ with store.pipeline_lease() as acquired:
+  assert acquired is True
+  assert connection.commits==1
+ assert connection.commits==2
+ assert 'pg_try_advisory_lock' in connection.queries[0]
+ assert 'pg_advisory_unlock' in connection.queries[1]

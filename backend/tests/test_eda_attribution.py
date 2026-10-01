@@ -50,3 +50,18 @@ def test_attribution_marks_unresolved_forecast_error_as_unknown():
 
     assert report["categories"]["forecast_error"] is None
     assert report["metrics"]["realized_probability"] is None
+
+
+def test_attribution_preserves_zero_fill_and_zero_price():
+    record = decision(
+        price=0.0,
+        executable_price=0.0,
+        paper_execution_price=0.0,
+        execution_reconciled=True,
+        executed_size=0.0,
+        executed_average_price=0.0,
+    )
+    report = evaluate_attribution(record)
+    assert report["metrics"]["expected_execution_price"] == 0.0
+    assert report["metrics"]["realized_execution_price"] == 0.0
+    assert report["metrics"]["realized_size"] == 0.0
