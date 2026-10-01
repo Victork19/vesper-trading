@@ -620,6 +620,9 @@ def _decide_impl(req:DecisionRequest):
  if h.mode in (Mode.SHADOW,Mode.LIVE) and (req.market.yes_ask is None or req.market.no_ask is None):quality_gates.append('executable_quote_required')
  if quality_gates:size=0;gates+=quality_gates
  flow=toxic.inspect(req.market,req.flow_imbalance,req.large_wallet_signal);size,risk_reasons=portfolio.gate(req.market,size,req.flow_imbalance,req.large_wallet_signal,e.recommended_side);gates+=risk_reasons+flow['flags'];relevant=memory.active_scars(req.strategy_id,req.market.market_type,req.market.market_id,req.market.regime);principles=[p for p in memory.principles() if p.status=='active' and p.strategy_id in (req.strategy_id,'global')];cited=[s.id for s in relevant];cp=[p.id for p in principles]
+ if h.mode==Mode.PAPER and size>0:
+  max_notional=max(.01,float(h.paper_starting_capital or 10))*max(.001,float(os.getenv('PAPER_MAX_TRADE_PCT','.02')));max_size=max_notional/max(1e-9,float(e.executable_price));
+  if size>max_size:size=max_size;gates+=['paper_trade_size_cap']
  preferred_evaluation=next((item for item in action_evaluations if item.action==f'BUY {e.recommended_side}'),None)
  if not req.exploration and not req.paper_research_sample and policy_proposal.status=='rejected' and preferred_evaluation is not None and preferred_evaluation.available and size>0:size=0;gates+=['consequence_policy_rejected']
  if bucket_killer.suspended(req.strategy_id,req.market.market_type,req.market.regime):size=0;gates+=['bucket_suspended_negative_expectancy']
