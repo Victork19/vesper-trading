@@ -109,6 +109,45 @@ class TradingMemory:
   with self.db.connection() as c:
    row=c.execute("SELECT COUNT(*) AS count FROM memory WHERE tier='COLD' AND value ? 'action'").fetchone()
    return int(row['count'])
+ def paper_summary(self):
+  """Return historical paper-account totals without loading every decision."""
+  query="""
+   WITH paper AS (
+    SELECT value,
+      COALESCE(NULLIF(value->>'size','')::double precision,0) AS size,
+      COALESCE(NULLIF(value->>'paper_fill_fraction','')::double precision,1) AS fill,
+      COALESCE(value->>'outcome','pending') AS outcome,
+      COALESCE(value->>'research_eligible','false')='true' AS research,
+      COALESCE(value->'market_context'->>'paper_exploration','false')='true' AS exploration,
+      CONCAT_WS(':',COALESCE(value->>'strategy_id','unknown'),COALESCE(value->>'market_id','unknown'),COALESCE(value->>'regime','unknown'),COALESCE(value->>'model_version','none')) AS bucket,
+      COALESCE(NULLIF(value->>'pnl','')::double precision,0) AS pnl
+    FROM memory
+    WHERE tier='COLD' AND value ? 'action' AND value->>'mode'='paper'
+   ), exposed AS (
+    SELECT * FROM paper WHERE size>0 AND fill>0
+   )
+   SELECT
+    (SELECT COUNT(*) FROM paper) AS decisions,
+    COUNT(*) AS exposed,
+    COUNT(*) FILTER (WHERE exploration) AS exploration_exposed,
+    COUNT(*) FILTER (WHERE exploration AND outcome IN ('win','loss','push')) AS exploration_resolved,
+    COUNT(*) FILTER (WHERE exploration AND outcome='pending') AS exploration_pending,
+    COUNT(*) FILTER (WHERE research) AS research_exposed,
+    COUNT(DISTINCT bucket) FILTER (WHERE research) AS independent_buckets,
+    COUNT(*) FILTER (WHERE research AND outcome IN ('win','loss','push')) AS resolved,
+    COUNT(DISTINCT bucket) FILTER (WHERE research AND outcome IN ('win','loss','push')) AS independent_resolved,
+    COUNT(*) FILTER (WHERE research AND outcome='pending') AS pending,
+    COUNT(DISTINCT bucket) FILTER (WHERE research AND outcome='pending') AS independent_pending,
+    COUNT(*) FILTER (WHERE research AND outcome='win') AS wins,
+    COALESCE(SUM(pnl) FILTER (WHERE research AND outcome IN ('win','loss','push')),0) AS pnl,
+    COALESCE(SUM(pnl) FILTER (WHERE exploration AND outcome IN ('win','loss','push')),0) AS exploration_pnl
+   FROM exposed
+  """
+  with self.db.connection() as c:row=c.execute(query).fetchone()
+  result={key:int(row[key] or 0) for key in ('decisions','exposed','exploration_exposed','exploration_resolved','exploration_pending','research_exposed','independent_buckets','resolved','independent_resolved','pending','independent_pending','wins')}
+  result.update({'pnl':float(row['pnl'] or 0),'exploration_pnl':float(row['exploration_pnl'] or 0)})
+  resolved=result['resolved'];result['win_rate']=result['wins']/resolved if resolved else None
+  return result
  def save_order(self,order,decision=None):
   allowed={
    'new':{'new','accepted','rejected','failed','unknown','reconciliation_required'},

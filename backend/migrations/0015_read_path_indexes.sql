@@ -2,6 +2,9 @@
 CREATE INDEX IF NOT EXISTS idx_memory_cold_action_updated
     ON memory (updated_at DESC)
     WHERE tier='COLD' AND (value ? 'action');
+CREATE INDEX IF NOT EXISTS idx_memory_cold_paper_action_updated
+    ON memory (updated_at DESC)
+    WHERE tier='COLD' AND (value ? 'action') AND value->>'mode'='paper';
 CREATE INDEX IF NOT EXISTS idx_memory_tier_updated
     ON memory (tier, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_eda_replays_created
