@@ -282,7 +282,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
   request=DecisionRequest(market=market_input,strategy_id=strategy_id,execute=True,evidence_complete=True)
   try:decision=decide_fn(request,None)
   except Exception as exc:skipped+=1;log.warning('autonomous paper evaluation failed market=%s error=%s',market_id,exc);continue
-  evaluated+=1;type_counts[selection_type]=type_counts.get(selection_type,0)+1;recent[market_id]=now
+  evaluated+=1;recent[market_id]=now
   if decision.size>0:traded+=1;pending_markets.add(market_id)
   elif research_sampling_enabled:
    research_market=market_input.model_copy(deep=True)
@@ -298,6 +298,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
     except Exception as exc:log.warning('paper exploration failed market=%s error=%s',market_id,exc);exploration_decision=None
     if exploration_decision is not None and exploration_decision.size>0:
      decision=exploration_decision;traded+=1;exploration_traded+=1;pending_markets.add(market_id);log.info('paper exploration trade market=%s side=%s size=%.6f edge=%.6f excluded_from_research=true',market_id,decision.side,decision.size,decision.edge)
+  if decision.size>0:type_counts[selection_type]=type_counts.get(selection_type,0)+1
   log.info('autonomous paper evaluation market=%s horizon_hours=%.3f bucket=%s action=%s size=%.6f edge=%.6f strategy=%s',market_id,hours,selection_type,decision.action,decision.size,decision.edge,decision.strategy_id)
  telemetry.inc('vesper_autonomous_paper_evaluations_total',value=evaluated);telemetry.inc('vesper_autonomous_paper_trades_total',value=traded);telemetry.inc('vesper_autonomous_paper_research_samples_total',value=research_sampled);telemetry.inc('vesper_autonomous_paper_exploration_trades_total',value=exploration_traded);telemetry.set('vesper_autonomous_paper_enabled',1);telemetry.set('vesper_autonomous_paper_research_sampling_enabled',int(research_sampling_enabled));telemetry.set('vesper_autonomous_paper_exploration_enabled',int(exploration_enabled))
  return {'enabled':True,'evaluated':evaluated,'traded':traded,'research_sampled':research_sampled,'exploration_traded':exploration_traded,'skipped':skipped,'horizon_skipped':horizon_skipped,'candidates':candidate_count,'min_resolution_hours':min_hours,'max_resolution_hours':max_hours,'fast_only':fast_only,'fast_max_hours':fast_max}
