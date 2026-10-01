@@ -48,6 +48,23 @@ def _select_strategy(memory,market_id,arms):
  counts={arm:0 for arm in arms}
  for decision in memory.decisions():
   if decision.strategy_id in counts:counts[decision.strategy_id]+=1
+ minimum=max(1,int(os.getenv('PAPER_STRATEGY_MIN_RESOLVED','10')));minimum_expectancy=float(os.getenv('PAPER_STRATEGY_MIN_EXPECTANCY','0'))
+ performance={}
+ for arm in arms:
+  resolved=[d for d in memory.decisions() if d.strategy_id==arm and d.research_eligible and d.outcome in ('win','loss','push')]
+  if len(resolved)<minimum:continue
+  exposure=0.0
+  for decision in resolved:
+   quantity=float(decision.executed_size or 0) if decision.execution_reconciled else float(decision.size or 0)*float(decision.paper_fill_fraction or 0)
+   price=float(decision.executed_average_price if decision.execution_reconciled and decision.executed_average_price is not None else decision.paper_execution_price if decision.paper_execution_price is not None else decision.executable_price if decision.executable_price is not None else decision.price)
+   exposure+=max(0.0,quantity*price+float(decision.executed_fees or 0))
+  performance[arm]=(sum(float(d.pnl or 0) for d in resolved)/max(exposure,1e-9),len(resolved))
+ if performance:
+  viable=[arm for arm in arms if arm in performance and performance[arm][0]>minimum_expectancy]
+  if not viable:return None,counts
+  best=max(performance[arm][0] for arm in viable);candidates=[arm for arm in viable if abs(performance[arm][0]-best)<1e-12]
+  digest=hashlib.sha256(str(market_id).encode()).hexdigest()
+  return candidates[int(digest[:8],16)%len(candidates)],counts
  minimum=min(counts.values())
  candidates=[arm for arm in arms if counts[arm]==minimum]
  digest=hashlib.sha256(str(market_id).encode()).hexdigest()
@@ -190,7 +207,7 @@ def recover_submission_intents(memory, service=None):
 def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
  enabled=os.getenv('AUTO_PAPER_ENABLED','true').lower()=='true'
  if not enabled or memory.hot().mode!=Mode.PAPER:return {'enabled':enabled,'evaluated':0,'traded':0,'skipped':0,'reason':'disabled_or_not_paper'}
- limit=max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3')));cooldown=max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')));type_cap=max(1,int(os.getenv('AUTO_PAPER_MAX_PER_TYPE_PER_TICK','1')));exploration_enabled=os.getenv('AUTO_PAPER_EXPLORATION_ENABLED','true').lower()=='true';exploration_limit=max(0,int(os.getenv('AUTO_PAPER_EXPLORATION_MAX_PER_TICK','2')));min_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));configured_max=max(min_hours,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24')));fast_only=fast_markets_only();fast_max=_fast_max_hours();max_hours=min(configured_max,fast_max) if fast_only else configured_max;prefer_fast=os.getenv('AUTO_PAPER_PREFER_FAST_MARKETS','true').lower()=='true'
+ limit=max(1,int(os.getenv('AUTO_PAPER_DECISIONS_PER_TICK','3')));cooldown=max(60,int(os.getenv('AUTO_PAPER_MARKET_COOLDOWN_SECONDS','21600')));type_cap=max(1,int(os.getenv('AUTO_PAPER_MAX_PER_TYPE_PER_TICK','1')));profit_first=os.getenv('PAPER_PROFIT_FIRST','true').lower()=='true';exploration_enabled=(not profit_first) and os.getenv('AUTO_PAPER_EXPLORATION_ENABLED','false').lower()=='true';exploration_limit=max(0,int(os.getenv('AUTO_PAPER_EXPLORATION_MAX_PER_TICK','2')));min_hours=max(.01,float(os.getenv('AUTO_PAPER_MIN_RESOLUTION_HOURS','.05')));configured_max=max(min_hours,float(os.getenv('AUTO_PAPER_MAX_RESOLUTION_HOURS','24')));fast_only=fast_markets_only();fast_max=_fast_max_hours();max_hours=min(configured_max,fast_max) if fast_only else configured_max;prefer_fast=os.getenv('AUTO_PAPER_PREFER_FAST_MARKETS','true').lower()=='true'
  now=datetime.now(timezone.utc);recent={};pending_markets=set()
  for decision in memory.decisions():
   if decision.source.startswith('polymarket'):
@@ -199,7 +216,7 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
     created=datetime.fromisoformat(decision.created_at.replace('Z','+00:00'))
     if decision.market_id not in recent or created>recent[decision.market_id]:recent[decision.market_id]=created
    except ValueError:continue
- type_counts={};evaluated=traded=research_sampled=exploration_traded=skipped=0;horizon_skipped=0;candidate_count=0;research_sampling_enabled=os.getenv('AUTO_PAPER_RESEARCH_SAMPLING_ENABLED','true').lower()=='true';page_size=max(50,min(100,int(os.getenv('AUTO_PAPER_MARKET_PAGE_SIZE','100'))));pages=max(1,min(10,int(os.getenv('AUTO_PAPER_MARKET_PAGES','5'))));items=[]
+ type_counts={};evaluated=traded=research_sampled=exploration_traded=skipped=0;horizon_skipped=0;candidate_count=0;research_sampling_enabled=(not profit_first) and os.getenv('AUTO_PAPER_RESEARCH_SAMPLING_ENABLED','false').lower()=='true';page_size=max(50,min(100,int(os.getenv('AUTO_PAPER_MARKET_PAGE_SIZE','100'))));pages=max(1,min(10,int(os.getenv('AUTO_PAPER_MARKET_PAGES','5'))));items=[]
  for page in range(pages):
   # Gamma's default ordering is dominated by long-dated markets. Request
   # nearest-expiry ordering so five-minute BTC/ETH and similar markets are
@@ -272,7 +289,10 @@ def autonomous_paper_cycle(runner,memory,decide_fn,fast_model=None):
   model=fast_model.estimate(item,market_input,memory)
   if model is not None:
    telemetry.inc('vesper_fast_model_estimates_total',labels={'model_version':model['model_version'],'asset':model['asset']});telemetry.set('vesper_fast_model_uncertainty',model['uncertainty']);telemetry.inc('vesper_fast_model_regime_total',labels={'regime':model['regime']})
-  arms=_strategy_arms(model is not None);strategy_id,arm_counts=_select_strategy(memory,market_id,arms);forecast=baseline
+  arms=_strategy_arms(model is not None);strategy_selection,arm_counts=_select_strategy(memory,market_id,arms)
+  if strategy_selection is None:
+   skipped+=1;log.info('autonomous paper skipped market=%s reason=no_positive_strategy_expectancy',market_id);continue
+  strategy_id=strategy_selection;forecast=baseline
   if strategy_id=='fast_model' and model is not None:forecast=model
   elif strategy_id=='hybrid_ensemble' and model is not None:forecast=hybrid_forecast(baseline,model,memory);telemetry.set('vesper_ensemble_fast_weight',forecast['components'][1]['weight'])
   _apply_forecast(market_input,forecast);market_input.regime=model['regime'] if strategy_id=='fast_model' and model is not None else 'baseline'
